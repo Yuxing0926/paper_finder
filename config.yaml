@@ -1,0 +1,85 @@
+# paper_finder configuration
+#
+# Matching model
+# --------------
+# All text is normalised before matching: lowercased, every run of
+# non-alphanumeric characters collapsed into a single space. Matching is then
+# done on whole tokens (so "ito" never matches "composition").
+#
+# A term may end with "*" for prefix matching:
+#     conduc*   ->  conducting, conductive, conductivity, conductor
+#     film*     ->  film, films
+#
+# Every entry under "must" is a *group*. Groups are ANDed together, terms
+# inside a group are ORed:
+#     must: [[transparent, tco], [conduc*, electrode*]]
+#       -> (transparent OR tco) AND (conduc* OR electrode*)
+
+email: 469900626@qq.com       # used for Crossref/OpenAlex polite pools
+
+defaults:
+  since: 2015                 # earliest publication year
+  doc_type: journal-article   # Crossref type filter
+  depth: 4000                 # max records pulled per Crossref query
+  page_size: 1000             # Crossref rows per request (API max)
+  oa_batch: 100               # DOIs per OpenAlex request (API max)
+  min_remaining_usd: 0.02     # abort when OpenAlex budget drops below this
+  cache: true                 # reuse previously enriched DOIs
+  match: title                # title | title_abstract  (field used for must/pv)
+
+channels:
+  TCO:
+    - query: transparent conductive oxide
+      must:
+        - [transparent*, tco, ito, azo, gzo, fto, itazo, "indium tin oxide"]
+        - [conduc*, electrode*]
+    - query: transparent conducting oxide
+      must:
+        - [transparent*, tco, ito, azo, gzo, fto, itazo, "indium tin oxide"]
+        - [conduc*, electrode*]
+
+  ITO:
+    - query: indium tin oxide
+      must:
+        - ["indium tin oxide", ito]
+        - [transparent*, conduc*, film*, layer*, electrode*, coating*, oxide*]
+        - [film*, layer*, electrode*, coating*, transparent*, solar, cell, cells,
+           photovolta*, window*, contact*, device*, substrate*, deposition,
+           doped, doping, oxide*]
+
+  FTO:
+    - query: fluorine doped tin oxide
+      must:
+        - ["fluorine doped tin oxide", fto, "sno2 f", "f doped sno2"]
+        - [transparent*, conduc*, film*, layer*, electrode*, coating*, oxide*]
+        - [film*, layer*, electrode*, coating*, transparent*, solar, cell, cells,
+           photovolta*, window*, contact*, device*, substrate*, deposition,
+           doped, doping, oxide*]
+
+  AZO:
+    - query: aluminum doped zinc oxide
+      must:
+        - ["al doped zno", "aluminum doped zinc oxide", "aluminium doped zinc oxide",
+           "al zno", azo]
+        - [transparent*, conduc*, film*, layer*, electrode*, coating*, oxide*]
+        - [film*, layer*, electrode*, coating*, transparent*, solar, cell, cells,
+           photovolta*, window*, contact*, device*, substrate*, deposition,
+           doped, doping, oxide*]
+
+# A paper is flagged pv_related=yes when its title (and abstract, when the
+# metadata has one) contains any of these terms. This never removes rows.
+pv_keywords:
+  - solar
+  - solar cell
+  - photovolta*
+  - pv
+  - cigs
+  - perovskit*
+  - heterojunction
+  - opv
+  - module
+  - modules
+  - silicon
+  - cell
+  - cells
+  - tandem
