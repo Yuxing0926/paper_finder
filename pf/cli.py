@@ -17,9 +17,10 @@ from typing import Dict, List, Optional, Sequence
 import yaml
 
 from . import __version__
-from .export import write_csv
+from .export import read_csv, write_csv
 from .filters import auto_groups, is_pv_related
 from .models import Paper
+from .refs import write_bibtex, write_ris
 from .sources.crossref import Crossref
 from .sources.openalex import OpenAlex, OpenAlexBudgetError, OpenAlexError
 from .store import DEFAULT_PATH as DEFAULT_CACHE, Store
@@ -66,7 +67,38 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cache", help="path to the SQLite cache")
     parser.add_argument("--no-cache", action="store_true", help="ignore and do not write the cache")
     parser.add_argument("--dry-run", action="store_true", help="discover only; do not call OpenAlex")
-    parser.add_argument("--version", action="version", version=f"paper_finder {__version__}")
+    parser.add_argument(
+        "--download-pdfs",
+        action="store_true",
+        help="after writing the CSV, try downloading open-access PDFs",
+    )
+    parser.add_argument(
+        "--pdf-dir",
+        help="directory for downloaded PDFs (default output/pdfs)",
+    )
+    parser.add_argument(
+        "--pdf-limit",
+        type=int,
+        help="stop after this many download attempts",
+    )
+    parser.add_argument(
+        "--from-csv",
+        metavar="PATH",
+        help="skip discovery and download PDFs / write references for an existing CSV",
+    )
+    parser.add_argument(
+        "--refs",
+        action="store_true",
+        help="write RIS and BibTeX files next to the CSV",
+    )
+    parser.add_argument(
+        "--include-closed",
+        action="store_true",
+        help="also probe papers marked closed (they almost never have a free copy)",
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"paper_finder {__version__}"
+    )
     return parser
 
 
@@ -233,6 +265,49 @@ def report(papers: List[Paper]) -> None:
     log("=" * 58)
 
 
+def run_pdf_download(
+    papers: List[Paper],
+    root: Path,
+    email: str,
+    limit: Optional[int],
+    include_closed: bool = False,
+) -> None:
+    """Try to fetch open-access PDFs and write a list of the misses."""
+    from .pdf import PdfFetcher
+    from .refs import write_bibtex, write_ris
+
+    fetcher = PdfFetcher(email=email, root=root)
+    targets = papers
+    if limit:
+        targets = papers[:limit]
+    log(f"\nattempting PDFs for {len(targets)} papers into {root} ...")
+    report = fetcher.fetch(targets, log=log, include_closed=include_closed)
+
+    counts = report.summary()
+    log("")
+    log("=" * 58)
+    for status, count in sorted(counts.items()):
+        log(f"  {status:12s}: {count}")
+    log("=" * 58)
+
+    needs_manual = [r for r in report.results if r.status != "saved"]
+    if needs_manual:
+        miss_path = root.parent / "download_failed.csv"
+        by_doi = {p.doi: p for p in targets}
+        rows = [by_doi[r.doi] for r in needs_manual if r.doi in by_doi]
+        write_csv(rows, miss_path)
+        refs_dir = root.parent / "references"
+        ris_count = write_ris(rows, refs_dir / "download_failed.ris")
+        write_bibtex(rows, refs_dir / "download_failed.bib")
+        log(f"\n{len(rows)} of {len(targets)} papers still need manual fetching")
+        log(f"  ({len(report.closed)} are closed access)")
+        log(f"  list  : {miss_path}")
+        log(f"  RIS   : {refs_dir / 'download_failed.ris'} ({ris_count} records)")
+        log(f"  BibTeX: {refs_dir / 'download_failed.bib'}")
+        log("  Import the RIS into Zotero; its resolver will pull the PDFs")
+        log("  through your institutional subscription.")
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -241,6 +316,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     defaults = config.get("defaults") or {}
     email = config.get("email", "")
     pv_keywords = list(config.get("pv_keywords") or [])
+    pdf_root = Path(args.pdf_dir) if args.pdf_dir else Path("output/pdfs")
+
+    if args.from_csv:
+        source = Path(args.from_csv)
+        if not source.exists():
+            log(f"No such CSV: {source}")
+            return 2
+        papers = read_csv(source)
+        log(f"loaded {len(papers)} papers from {source}")
+        if args.refs:
+            refs_dir = source.parent / "references"
+            ris = write_ris(papers, refs_dir / f"{source.stem}.ris")
+            bib = write_bibtex(papers, refs_dir / f"{source.stem}.bib")
+            log(f"wrote {ris} RIS records to {refs_dir / f'{source.stem}.ris'}")
+            log(f"wrote {bib} BibTeX records to {refs_dir / f'{source.stem}.bib'}")
+        if args.download_pdfs:
+            run_pdf_download(papers, pdf_root, email, args.pdf_limit, args.include_closed)
+        if not args.refs and not args.download_pdfs:
+            log("nothing to do: pass --download-pdfs and/or --refs")
+        return 0
 
     try:
         channels = resolve_channels(args, config)
@@ -318,6 +413,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     count = write_csv(papers, output)
     report(papers)
     log(f"\nwrote {count} rows to {output}")
+
+    if args.refs:
+        refs_dir = output.parent / "references"
+        ris = write_ris(papers, refs_dir / f"{output.stem}.ris")
+        bib = write_bibtex(papers, refs_dir / f"{output.stem}.bib")
+        log(f"wrote {ris} RIS records to {refs_dir / f'{output.stem}.ris'}")
+        log(f"wrote {bib} BibTeX records to {refs_dir / f'{output.stem}.bib'}")
+
+    if args.download_pdfs:
+        run_pdf_download(papers, pdf_root, email, args.pdf_limit, args.include_closed)
+
     return 0
 
 

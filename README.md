@@ -95,6 +95,80 @@ python -m pf --all --no-cache -o output/fresh.csv
 | `--cache` | SQLite cache path | `output/cache.db` |
 | `--no-cache` | ignore and do not write the cache | off |
 | `--dry-run` | discovery only, no OpenAlex calls | off |
+| `--download-pdfs` | try to fetch open-access PDFs after writing the CSV | off |
+| `--pdf-dir` | where PDFs are stored | `output/pdfs` |
+| `--pdf-limit N` | stop after N download attempts | all |
+| `--include-closed` | also probe rows marked `closed` | off |
+| `--refs` | write RIS and BibTeX next to the CSV | off |
+| `--from-csv PATH` | skip discovery; operate on an existing CSV | — |
+
+## Getting the PDFs
+
+The CSV holds metadata only. `--download-pdfs` will additionally try to fetch
+the **open-access** full text and saves it as
+`output/pdfs/<year>/<surname>_<year>_<journal>.pdf`.
+
+```bash
+# from scratch: collect metadata, then download
+python -m pf --all -o output/tco_all.csv --download-pdfs
+
+# much more common: reuse an existing CSV, no re-crawling, no OpenAlex cost
+python -m pf --from-csv output/tco_all.csv --download-pdfs
+
+# just the reference files
+python -m pf --from-csv output/tco_all.csv --refs
+
+# try the first 20 only
+python -m pf --from-csv output/tco_all.csv --download-pdfs --pdf-limit 20
+```
+
+### Expectations: this is not a bulk PDF mirror
+
+Measured on a random sample of 120 open-access rows from a 5,971-row run:
+
+| Result | Share |
+|---|---|
+| PDF saved | **~16%** |
+| Blocked by publisher bot protection | 64% |
+| HTML landing page, no direct file | 4% |
+| Network/protocol error | 15% |
+
+Across the whole table the ceiling is roughly **2300 candidates** (`gold`,
+`hybrid`, `bronze`, `green`, `diamond`); the other 3,684 rows are `closed` and
+have no legal free copy at all. `--include-closed` rarely helps — in a 60-paper
+probe only one had any PDF link anywhere in OpenAlex.
+
+Why the remainder fails, measured per host:
+
+| Blocker | Behaviour |
+|---|---|
+| MDPI, Wiley, ACS, RSC, AIP, Optica, ScienceDirect, Taylor & Francis | HTTP 403 to every scripted request |
+| IOP, IEEE, some repositories | redirect to `validate.perfdrive.com` bot checks |
+| HAL (`hal.science`) | "Making sure you're not a bot" challenge page |
+| PMC | `/pdf/` paths return 403 without a session |
+| EPFL Infoscience, METU, UCF, ETH, RWTH | landing pages with no `citation_pdf_url` |
+
+Only a real browser (Playwright/Chromium) gets past these, and even then it is
+fragile and against some sites' terms. That path is deliberately not taken.
+
+### The manual path, which works better
+
+When a download fails, the tool writes the remainder to
+`output/download_failed.csv` and generates
+`output/references/download_failed.ris` plus `.bib`.
+
+Import the `.ris` into **Zotero**. With the *Zotero Connector* browser extension
+and your institutional access (or the university VPN), Zotero resolves and
+downloads those PDFs in bulk with a real browser session — which is exactly the
+part a script cannot do. Use `--refs` to export the whole table for the same
+purpose.
+
+## Reference files
+
+`--refs` writes two files next to the CSV, under `output/references/`:
+
+- `<name>.ris` — one `TY  - JOUR` record per paper, with `AU`, `PY`, `T2`, `VL`, `SP`/`EP`, `AB`, `KW`, `DO`, `UR`. The `N1` note records `oa_status` and `channel`. Imports cleanly into Zotero, EndNote and Mendeley.
+- `<name>.bib` — `@article` entries keyed `<surname><year>_<n>`, with LaTeX-escaped `&`, `{`, `}`.
 
 ## Output
 
@@ -218,15 +292,22 @@ pf/
   cli.py                    argument parsing and pipeline orchestration
   models.py                 Paper dataclass, CSV columns, DOI normalisation
   filters.py                token-level keyword matching
-  export.py                 CSV writer
+  export.py                 CSV writer and reader
   store.py                  SQLite cache
+  pdf.py                    open-access PDF fetcher
+  refs.py                   RIS / BibTeX export
   llm.py                    optional LLM hook (no-op by default)
   sources/
     crossref.py             discovery
     openalex.py             enrichment, inverted-index decoding
 tests/
-  test_filters.py           offline unit tests
-output/                     generated CSV and cache (gitignored)
+  test_filters.py           keyword matching
+  test_export.py            CSV round-tripping
+  test_pdf.py               file naming and reference export
+output/                     generated CSV, PDFs and cache (gitignored)
+  pdfs/<year>/              downloaded PDFs
+  references/               RIS and BibTeX
+  download_failed.csv       rows that still need a manual fetch
 ```
 
 ## Tests
@@ -235,7 +316,7 @@ output/                     generated CSV and cache (gitignored)
 python -m pytest tests/ -q
 ```
 
-The tests are pure logic and never touch the network. They cover token boundaries (`ito` versus `composition`), prefix terms, multi-word terms, group AND/OR semantics, and the photovoltaic flag.
+The tests are pure logic and never touch the network. They cover token boundaries (`ito` versus `composition`), prefix terms, multi-word terms, group AND/OR semantics, the photovoltaic flag, PDF filename generation, CSV round-tripping (including the blank-affiliation alignment case), and the RIS/BibTeX writers.
 
 ## Limitations
 
@@ -243,11 +324,15 @@ The tests are pure logic and never touch the network. They cover token boundarie
 - **Crossref depth is capped.** Crossref rejects `offset + rows > 10000`, so at most 10,000 candidates per query can be scanned. Relevance also degrades with depth: the first 1,000 records are ~90% on-topic, and by offset 3,000 that drops to ~37%.
 - **Abstracts are missing for ~36% of papers.** Neither source has them; this is a metadata gap, not a bug.
 - **Affiliations reflect OpenAlex's data.** Some publishers deposit institution names only for the corresponding author, so the list can contain blanks for other authors.
-- **No PDF download.** The tool deliberately collects metadata only, since full text usually sits behind a subscription.
+- **PDF download works for a minority of papers.** Roughly 16% of open-access rows download cleanly; the rest sit behind anti-bot protection or have no direct file. This is a property of publisher sites, not something the tool can fix without a real browser session. Use the `download_failed.ris` + Zotero route for those.
+- **No paywall circumvention.** Rows marked `closed` are never fetched from shadow libraries; they are left for your institutional subscription.
+- **Reference exports require a DOI.** Records without one are skipped by the RIS/BibTeX writers rather than emitted with a guessed key.
 
 ## Data sources and attribution
 
-Metadata comes from [Crossref](https://www.crossref.org/) and [OpenAlex](https://openalex.org/). OpenAlex data is published under [CC0](https://creativecommons.org/publicdomain/zero/1.0/); Crossref metadata is openly available under its terms of use. Please keep the `email` in `config.yaml` accurate — both services use it to route requests into their polite pools.
+Metadata comes from [Crossref](https://www.crossref.org/) and [OpenAlex](https://openalex.org/); open-access locations come from [Unpaywall](https://unpaywall.org/). OpenAlex data is published under [CC0](https://creativecommons.org/publicdomain/zero/1.0/); Crossref metadata is openly available under its terms of use. Please keep the `email` in `config.yaml` accurate — all three services use it to route requests into their polite pools.
+
+When downloading full text, respect each publisher's terms of use and any licence attached to the individual article. `oa_status = bronze` means free to read on the publisher's site, which is not the same as openly licensed for redistribution.
 
 ## License
 
