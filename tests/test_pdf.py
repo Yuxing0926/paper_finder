@@ -130,3 +130,28 @@ class TestReferenceExport(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestBrowserHelpers(unittest.TestCase):
+    def test_hard_challenge_detection(self):
+        from pf.browser import _is_hard_challenge
+
+        self.assertTrue(_is_hard_challenge("pubs.rsc.org"))
+        self.assertTrue(_is_hard_challenge("www.sciencedirect.com"))
+        self.assertFalse(_is_hard_challenge("www.nature.com"))
+        self.assertFalse(_is_hard_challenge("example.com"))
+
+    def test_bot_marker_detection(self):
+        from pf.browser import _looks_blocked
+
+        self.assertTrue(_looks_blocked("Just a moment...", ""))
+        self.assertTrue(_looks_blocked("", "please complete the captcha"))
+        self.assertTrue(_looks_blocked("Access Denied", ""))
+        self.assertFalse(_looks_blocked("A real article title", "<html>body</html>"))
+
+    def test_chromium_env_prepends_lib_dir(self):
+        import sys
+
+        from pf.browser import chromium_env
+
+        env = chromium_env()
+        self.assertIn(str(Path(sys.prefix) / "lib"), env.get("LD_LIBRARY_PATH", "").split(":"))

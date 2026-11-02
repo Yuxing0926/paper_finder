@@ -95,73 +95,100 @@ python -m pf --all --no-cache -o output/fresh.csv
 | `--cache` | SQLite cache path | `output/cache.db` |
 | `--no-cache` | ignore and do not write the cache | off |
 | `--dry-run` | discovery only, no OpenAlex calls | off |
-| `--download-pdfs` | try to fetch open-access PDFs after writing the CSV | off |
+| `--download-pdfs` | fetch open-access PDFs in a browser after writing the CSV | off |
 | `--pdf-dir` | where PDFs are stored | `output/pdfs` |
 | `--pdf-limit N` | stop after N download attempts | all |
+| `--pdf-engine` | `browser` or `http` | `browser` |
+| `--show-browser` | visible browser window (helps with captchas) | off |
 | `--include-closed` | also probe rows marked `closed` | off |
 | `--refs` | write RIS and BibTeX next to the CSV | off |
 | `--from-csv PATH` | skip discovery; operate on an existing CSV | — |
 
 ## Getting the PDFs
 
-The CSV holds metadata only. `--download-pdfs` will additionally try to fetch
-the **open-access** full text and saves it as
+The CSV holds metadata only. `--download-pdfs` additionally fetches the
+**open-access** full text and saves it as
 `output/pdfs/<year>/<surname>_<year>_<journal>.pdf`.
+
+Downloads run through a **real Chromium session**, because plain HTTP requests
+are refused by almost every publisher. Install the browser once:
+
+```bash
+pip install -r requirements.txt
+python -m playwright install chromium
+```
+
+On a machine without root, the browser also needs a few system libraries.
+Install them into the conda environment instead:
+
+```bash
+conda install -c conda-forge at-spi2-core atk libxkbcommon libgbm \
+    xorg-libxdamage xorg-libxcomposite xorg-libxrandr xorg-libxfixes \
+    xorg-libxext xorg-libxrender xorg-libxtst alsa-lib
+```
+
+The tool adds the environment's `lib/` directory to `LD_LIBRARY_PATH` itself,
+so no shell configuration is needed.
 
 ```bash
 # from scratch: collect metadata, then download
 python -m pf --all -o output/tco_all.csv --download-pdfs
 
-# much more common: reuse an existing CSV, no re-crawling, no OpenAlex cost
+# reuse an existing CSV: no re-crawling, no OpenAlex cost
 python -m pf --from-csv output/tco_all.csv --download-pdfs
 
-# just the reference files
-python -m pf --from-csv output/tco_all.csv --refs
+# only the first 50 attempts
+python -m pf --from-csv output/tco_all.csv --download-pdfs --pdf-limit 50
 
-# try the first 20 only
-python -m pf --from-csv output/tco_all.csv --download-pdfs --pdf-limit 20
+# see what the browser is doing (useful when a captcha appears)
+python -m pf --from-csv output/tco_all.csv --download-pdfs --show-browser
+
+# fast, no browser: mostly blocked, but fine behind a proxy or on a campus network
+python -m pf --from-csv output/tco_all.csv --download-pdfs --pdf-engine http
 ```
 
 ### Expectations: this is not a bulk PDF mirror
 
-Measured on a random sample of 120 open-access rows from a 5,971-row run:
+Measured on random samples of open-access rows from a 5,971-row run:
 
-| Result | Share |
+| Engine | Saved |
 |---|---|
-| PDF saved | **~16%** |
-| Blocked by publisher bot protection | 64% |
-| HTML landing page, no direct file | 4% |
-| Network/protocol error | 15% |
+| Browser (default) | **~35-40%** of open-access rows |
+| Plain HTTP (`--pdf-engine http`) | ~16% |
 
-Across the whole table the ceiling is roughly **2300 candidates** (`gold`,
-`hybrid`, `bronze`, `green`, `diamond`); the other 3,684 rows are `closed` and
-have no legal free copy at all. `--include-closed` rarely helps — in a 60-paper
-probe only one had any PDF link anywhere in OpenAlex.
+The hard ceiling is the metadata itself: of 5,971 rows, **2,287 are open access**
+and the other 3,684 are `closed` — no legal free copy exists for those, and the
+tool never reaches for shadow libraries. `--include-closed` rarely helps; in a
+60-paper probe just one had a PDF link anywhere in OpenAlex.
 
-Why the remainder fails, measured per host:
+What the browser fixes, and what it does not:
 
-| Blocker | Behaviour |
-|---|---|
-| MDPI, Wiley, ACS, RSC, AIP, Optica, ScienceDirect, Taylor & Francis | HTTP 403 to every scripted request |
-| IOP, IEEE, some repositories | redirect to `validate.perfdrive.com` bot checks |
-| HAL (`hal.science`) | "Making sure you're not a bot" challenge page |
-| PMC | `/pdf/` paths return 403 without a session |
-| EPFL Infoscience, METU, UCF, ETH, RWTH | landing pages with no `citation_pdf_url` |
+| Host | Plain HTTP | Browser |
+|---|---|---|
+| Nature / Scientific Reports | 403 | **downloads** |
+| MDPI | 403 | **downloads** |
+| IOP | block | downloads in some cases |
+| Wiley (`pdfdirect`) | 403 | landing page loads, file does not |
+| RSC, ACS, AIP, ScienceDirect, Taylor & Francis | 403 | Cloudflare challenge never clears |
+| HAL | "not a bot" page | same |
+| PMC | 403 | reCAPTCHA |
+| IEEE | perfdrive check | same |
 
-Only a real browser (Playwright/Chromium) gets past these, and even then it is
-fragile and against some sites' terms. That path is deliberately not taken.
+The pattern is that datacentre IPs are the real blocker. The sample run came
+from a Hong Kong cloud address (`AS202736`), which is exactly what Cloudflare
+and friends are built to reject. **Run this from a campus network or a
+residential connection and the success rate is materially higher** — the code
+is unchanged, only the address differs.
 
-### The manual path, which works better
+Hosts that never clear a challenge are detected and skipped after a 3-second
+probe rather than wasting a 45-second timeout on each.
 
-When a download fails, the tool writes the remainder to
-`output/download_failed.csv` and generates
-`output/references/download_failed.ris` plus `.bib`.
+### The manual remainder
 
-Import the `.ris` into **Zotero**. With the *Zotero Connector* browser extension
-and your institutional access (or the university VPN), Zotero resolves and
-downloads those PDFs in bulk with a real browser session — which is exactly the
-part a script cannot do. Use `--refs` to export the whole table for the same
-purpose.
+Rows that could not be fetched are written to `output/download_failed.csv`, with
+`output/references/download_failed.ris` and `.bib` alongside. Import the RIS into
+Zotero and use the Zotero Connector with your institutional access — a real
+browser session with your cookies resolves the rest.
 
 ## Reference files
 
@@ -294,7 +321,8 @@ pf/
   filters.py                token-level keyword matching
   export.py                 CSV writer and reader
   store.py                  SQLite cache
-  pdf.py                    open-access PDF fetcher
+  pdf.py                    link resolution and the plain-HTTP fetcher
+  browser.py                Chromium fetcher (default; clears JS checks)
   refs.py                   RIS / BibTeX export
   llm.py                    optional LLM hook (no-op by default)
   sources/
@@ -324,7 +352,7 @@ The tests are pure logic and never touch the network. They cover token boundarie
 - **Crossref depth is capped.** Crossref rejects `offset + rows > 10000`, so at most 10,000 candidates per query can be scanned. Relevance also degrades with depth: the first 1,000 records are ~90% on-topic, and by offset 3,000 that drops to ~37%.
 - **Abstracts are missing for ~36% of papers.** Neither source has them; this is a metadata gap, not a bug.
 - **Affiliations reflect OpenAlex's data.** Some publishers deposit institution names only for the corresponding author, so the list can contain blanks for other authors.
-- **PDF download works for a minority of papers.** Roughly 16% of open-access rows download cleanly; the rest sit behind anti-bot protection or have no direct file. This is a property of publisher sites, not something the tool can fix without a real browser session. Use the `download_failed.ris` + Zotero route for those.
+- **PDF download works for a minority of papers.** Roughly 35-40% of open-access rows download from a cloud IP, and the rest sit behind anti-bot protection. The rate depends heavily on the network: a campus or residential connection does considerably better than a datacentre, because that is what the protections key on. Use the `download_failed.ris` + Zotero route for the remainder.
 - **No paywall circumvention.** Rows marked `closed` are never fetched from shadow libraries; they are left for your institutional subscription.
 - **Reference exports require a DOI.** Records without one are skipped by the RIS/BibTeX writers rather than emitted with a guessed key.
 

@@ -70,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--download-pdfs",
         action="store_true",
-        help="after writing the CSV, try downloading open-access PDFs",
+        help="after writing the CSV, download open-access PDFs in a real browser",
     )
     parser.add_argument(
         "--pdf-dir",
@@ -80,6 +80,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--pdf-limit",
         type=int,
         help="stop after this many download attempts",
+    )
+    parser.add_argument(
+        "--pdf-engine",
+        choices=["browser", "http"],
+        default="browser",
+        help="browser clears publisher JS checks; http is faster but mostly blocked",
+    )
+    parser.add_argument(
+        "--show-browser",
+        action="store_true",
+        help="run the browser with a visible window (helps with captchas)",
     )
     parser.add_argument(
         "--from-csv",
@@ -271,17 +282,35 @@ def run_pdf_download(
     email: str,
     limit: Optional[int],
     include_closed: bool = False,
+    engine: str = "browser",
+    show_browser: bool = False,
 ) -> None:
-    """Try to fetch open-access PDFs and write a list of the misses."""
+    """Download open-access PDFs, defaulting to a real browser session."""
     from .pdf import PdfFetcher
     from .refs import write_bibtex, write_ris
 
-    fetcher = PdfFetcher(email=email, root=root)
-    targets = papers
-    if limit:
-        targets = papers[:limit]
-    log(f"\nattempting PDFs for {len(targets)} papers into {root} ...")
-    report = fetcher.fetch(targets, log=log, include_closed=include_closed)
+    targets = papers[:limit] if limit else papers
+    log(f"\ndownloading PDFs for {len(targets)} papers into {root} ...")
+
+    if engine == "browser":
+        from .browser import BrowserFetcher, browser_available, full_chromium_available
+
+        if not browser_available():
+            log("! playwright chromium is not installed; falling back to http")
+            log("  install with: pip install playwright && python -m playwright install chromium")
+            engine = "http"
+        else:
+            if not full_chromium_available():
+                log("! only headless-shell found; some publishers will refuse")
+                log("  run: python -m playwright install chromium")
+            fetcher = BrowserFetcher(root=root, email=email, headless=not show_browser)
+            report = fetcher.fetch(
+                targets, log=log, include_closed=include_closed
+            )
+
+    if engine == "http":
+        fetcher = PdfFetcher(email=email, root=root)
+        report = fetcher.fetch(targets, log=log, include_closed=include_closed)
 
     counts = report.summary()
     log("")
@@ -304,8 +333,6 @@ def run_pdf_download(
         log(f"  list  : {miss_path}")
         log(f"  RIS   : {refs_dir / 'download_failed.ris'} ({ris_count} records)")
         log(f"  BibTeX: {refs_dir / 'download_failed.bib'}")
-        log("  Import the RIS into Zotero; its resolver will pull the PDFs")
-        log("  through your institutional subscription.")
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -332,7 +359,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             log(f"wrote {ris} RIS records to {refs_dir / f'{source.stem}.ris'}")
             log(f"wrote {bib} BibTeX records to {refs_dir / f'{source.stem}.bib'}")
         if args.download_pdfs:
-            run_pdf_download(papers, pdf_root, email, args.pdf_limit, args.include_closed)
+            run_pdf_download(papers, pdf_root, email, args.pdf_limit,
+                             args.include_closed, args.pdf_engine, args.show_browser)
         if not args.refs and not args.download_pdfs:
             log("nothing to do: pass --download-pdfs and/or --refs")
         return 0
@@ -422,7 +450,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         log(f"wrote {bib} BibTeX records to {refs_dir / f'{output.stem}.bib'}")
 
     if args.download_pdfs:
-        run_pdf_download(papers, pdf_root, email, args.pdf_limit, args.include_closed)
+        run_pdf_download(papers, pdf_root, email, args.pdf_limit,
+                             args.include_closed, args.pdf_engine, args.show_browser)
 
     return 0
 

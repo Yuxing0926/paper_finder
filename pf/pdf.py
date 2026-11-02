@@ -191,21 +191,28 @@ class PdfFetcher:
     def _unpaywall(self, doi: str) -> dict:
         if doi in self._seen_landing:
             return {}
-        params = {"email": self.email} if self.email else {}
-        try:
-            response = self.api.get(
-                UNPAYWALL_URL.format(doi=doi), params=params, timeout=30
-            )
-            if response.status_code == 404:
-                self._seen_landing[doi] = None
-                return {}
-            response.raise_for_status()
-            payload = response.json()
-            self._seen_landing[doi] = (payload.get("best_oa_location") or {}).get("url")
-            return payload
-        except Exception:
-            self._seen_landing[doi] = None
+        if not self.email:
+            # Unpaywall answers 422 without an email; remember nothing so a
+            # later run with an email configured can still work.
             return {}
+        params = {"email": self.email}
+        for attempt in range(3):
+            try:
+                response = self.api.get(
+                    UNPAYWALL_URL.format(doi=doi), params=params, timeout=30
+                )
+                if response.status_code == 404:
+                    self._seen_landing[doi] = None
+                    return {}
+                response.raise_for_status()
+                payload = response.json()
+                self._seen_landing[doi] = (payload.get("best_oa_location") or {}).get("url")
+                return payload
+            except Exception:  # noqa: BLE001
+                if attempt < 2:
+                    time.sleep(2**attempt)
+        # Transient failure: do not cache, so a retry can still succeed.
+        return {}
 
     def _openalex_pdf(self, doi: str) -> Optional[str]:
         params = {
