@@ -155,3 +155,10 @@ class TestBrowserHelpers(unittest.TestCase):
 
         env = chromium_env()
         self.assertIn(str(Path(sys.prefix) / "lib"), env.get("LD_LIBRARY_PATH", "").split(":"))
+
+
+class TestChromiumDetection(unittest.TestCase):
+    def test_full_chromium_available_returns_bool(self):
+        from pf.browser import full_chromium_available
+
+        self.assertIsInstance(full_chromium_available(), bool)

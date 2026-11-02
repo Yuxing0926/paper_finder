@@ -74,7 +74,7 @@ BOT_MARKERS = (
 )
 
 # Give a JavaScript challenge this long to clear before calling it blocked.
-CHALLENGE_WAIT_MS = 20000
+CHALLENGE_WAIT_MS = 3000
 
 # Hosts measured to present a challenge that never clears without a human.
 # Waiting on them just wastes time, so they are skipped after a short probe.
@@ -94,7 +94,7 @@ HARD_CHALLENGE_HOSTS = (
     "ieeexplore.ieee.org",
 )
 
-HARD_CHALLENGE_WAIT_MS = 3000
+HARD_CHALLENGE_WAIT_MS = 2000
 
 
 def _is_hard_challenge(host: str) -> bool:
@@ -135,8 +135,11 @@ def full_chromium_available() -> bool:
     if not cache.exists():
         return False
     for entry in cache.iterdir():
-        if entry.name.startswith("chromium-") and (entry / "chrome-linux" / "chrome").exists():
-            return True
+        if not entry.is_dir() or not entry.name.startswith("chromium-"):
+            continue
+        for sub in ("chrome-linux64", "chrome-linux"):
+            if (entry / sub / "chrome").exists():
+                return True
     return False
 
 
@@ -150,7 +153,7 @@ class BrowserFetcher:
     root: Path = Path("output/pdfs")
     email: str = ""
     headless: bool = True
-    timeout_ms: int = 45000
+    timeout_ms: int = 8000
     challenge_wait_ms: int = CHALLENGE_WAIT_MS
     pause: float = 1.0
     channel: Optional[str] = "chromium"
@@ -176,6 +179,26 @@ class BrowserFetcher:
         context.add_init_script(STEALTH_SCRIPT)
         return context
 
+    def _already_saved(self, paper) -> Optional[Path]:
+        """Return an existing file for this paper, so a rerun resumes."""
+        year = paper.year if paper.year.isdigit() else "unknown"
+        from .pdf import first_author_surname, safe_name
+
+        stem = (
+            f"{first_author_surname(paper)}_{year}_"
+            f"{safe_name(paper.journal, 'no journal', 60)}"
+        )
+        base = self.root / year / f"{stem}.pdf"
+        if base.exists() and base.stat().st_size > 0:
+            self._used_paths.add(str(base).lower())
+            return base
+        for index in range(2, 50):
+            candidate = self.root / year / f"{stem} ({index}).pdf"
+            if candidate.exists() and candidate.stat().st_size > 0:
+                self._used_paths.add(str(candidate).lower())
+                return candidate
+        return None
+
     def _save(self, download, destination: Path) -> tuple[str, int]:
         destination.parent.mkdir(parents=True, exist_ok=True)
         download.save_as(str(destination))
@@ -186,85 +209,136 @@ class BrowserFetcher:
         return "saved", destination.stat().st_size
 
     def _attempt(self, context, url: str, destination: Path) -> tuple[str, str, int]:
+        """Fetch one URL, then classify the outcome honestly.
+
+        A single page is used for both phases: a PDF that is served inline is
+        caught by the route handler, a PDF that is offered as a download is
+        caught by the download event, and anything else leaves the page loaded
+        so its HTML can be inspected without navigating twice.
+        """
         host = urlparse(url).netloc.lower()
         if host in self.blocked_hosts:
             return "blocked", f"{host} rejects automated downloads", 0
 
-        page = context.new_page()
-        download_timeout = (
+        budget = (
             HARD_CHALLENGE_WAIT_MS if _is_hard_challenge(host) else self.timeout_ms
         )
-        try:
+        captured: Dict[str, object] = {}
+
+        page = context.new_page()
+
+        def on_route(route):
+            if captured.get("data") is not None:
+                try:
+                    route.abort()
+                except Exception:
+                    pass
+                return
             try:
-                with page.expect_download(timeout=download_timeout) as pending:
-                    try:
-                        page.goto(url, timeout=self.timeout_ms, wait_until="domcontentloaded")
-                    except PlaywrightError as exc:
-                        # A navigation that turns into a download raises here.
-                        if "download is starting" not in str(exc).lower():
-                            raise
-                download = pending.value
-                status, size = self._save(download, destination)
-                if status == "saved":
-                    return "saved", "", size
-                return status, "downloaded file was not a PDF", 0
-            except PlaywrightTimeout:
+                response = route.fetch()
+                content_type = (response.headers.get("content-type") or "").lower()
+                if "pdf" in content_type:
+                    body = response.body()
+                    if body[:4] == b"%PDF":
+                        captured["data"] = body
+                        try:
+                            route.fulfill(
+                                status=200,
+                                headers={"content-type": "application/pdf"},
+                                body=body,
+                            )
+                        except Exception:
+                            pass
+                        return
+                route.fulfill(response=response)
+            except Exception:
+                try:
+                    route.abort()
+                except Exception:
+                    pass
+
+        def on_download(download):
+            if captured.get("data") is not None:
+                return
+            try:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                download.save_as(str(destination))
+                data = destination.read_bytes()
+                if data[:4] == b"%PDF":
+                    captured["data"] = data
+                else:
+                    destination.unlink(missing_ok=True)
+            except Exception:
                 pass
 
-            # No download started. It may be a JS challenge that clears after a
-            # few seconds, or a landing page we can mine for a PDF link.
-            title = ""
-            body = ""
-            wait_ms = (
-                HARD_CHALLENGE_WAIT_MS
-                if _is_hard_challenge(urlparse(page.url).netloc.lower())
-                else self.challenge_wait_ms
-            )
-            deadline = time.time() + wait_ms / 1000
-            while time.time() < deadline:
+        page.route("**/*", on_route)
+        page.on("download", on_download)
+
+        try:
+            try:
+                page.goto(url, timeout=budget, wait_until="commit")
+            except Exception:
+                pass
+
+            deadline = time.time() + budget / 1000
+            while time.time() < deadline and captured.get("data") is None:
                 try:
-                    title = page.title()
-                    body = page.content()
-                except PlaywrightError:
+                    page.wait_for_timeout(150)
+                except Exception:
                     break
-                if not _looks_blocked(title, body):
-                    break
-                page.wait_for_timeout(1500)
+
+            data = captured.get("data")
+            if isinstance(data, bytes):
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(data)
+                return "saved", "", len(data)
+
+            # Nothing downloaded: work out why from the page already loaded.
+            try:
+                title = page.title()
+                body = page.content()
+            except Exception:
+                title, body = "", ""
 
             if _looks_blocked(title, body):
                 final = urlparse(page.url).netloc.lower()
-                # doi.org and friends only redirect; the block belongs to the
-                # host they landed on, and blacklisting the redirector would
-                # poison every later DOI link.
                 if final not in REDIRECTOR_HOSTS:
                     self.blocked_hosts.add(final)
                 return "blocked", f"bot challenge from {final}", 0
 
             candidate = self._pdf_link_in_page(page, url)
-            if candidate:
+            if candidate and candidate != url:
                 try:
-                    with page.expect_download(timeout=download_timeout) as pending:
+                    follow = min(budget, 6000)
+                    with page.expect_download(timeout=follow) as pending:
                         try:
-                            page.goto(candidate, timeout=self.timeout_ms, wait_until="domcontentloaded")
-                        except PlaywrightError as exc:
+                            page.goto(candidate, timeout=follow, wait_until="commit")
+                        except Exception as exc:
                             if "download is starting" not in str(exc).lower():
-                                raise
+                                pass
                     download = pending.value
-                    status, size = self._save(download, destination)
-                    if status == "saved":
-                        return "saved", "", size
-                except (PlaywrightTimeout, PlaywrightError):
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    download.save_as(str(destination))
+                    blob = destination.read_bytes()
+                    if blob[:4] == b"%PDF":
+                        return "saved", "", len(blob)
+                    destination.unlink(missing_ok=True)
+                except Exception:
                     pass
 
-            final_host = urlparse(page.url).netloc.lower()
+            final = urlparse(page.url).netloc.lower()
             return (
                 "not_pdf",
-                f"landing page on {final_host} without a downloadable file",
+                f"landing page on {final or 'unknown host'} without a downloadable file",
                 0,
             )
         except Exception as exc:  # noqa: BLE001
             return "error", str(exc)[:120], 0
         finally:
+            try:
+                page.unroute("**/*", on_route)
+            except Exception:
+                pass
             try:
                 page.close()
             except Exception:
@@ -343,6 +417,21 @@ class BrowserFetcher:
                             )
                             continue
 
+                    existing = self._already_saved(paper)
+                    if existing is not None:
+                        report.add(
+                            DownloadResult(
+                                paper.doi,
+                                "saved",
+                                "already on disk",
+                                str(existing),
+                                existing.stat().st_size,
+                            )
+                        )
+                        if log:
+                            log(f"[{index}/{len(todo)}] skip (exists) {existing.name}")
+                        continue
+
                     links = self._helper.candidate_links(paper)
                     if not links:
                         report.add(
@@ -353,6 +442,7 @@ class BrowserFetcher:
                         continue
 
                     path = target_path(paper, self.root, self._used_paths)
+                    paper_started = time.time()
                     saved = False
                     last = ("error", "no usable link", 0)
                     for url in links:
@@ -365,7 +455,8 @@ class BrowserFetcher:
                             if log:
                                 log(
                                     f"[{index}/{len(todo)}] saved {path.name} "
-                                    f"({size // 1024} KB)"
+                                    f"({size // 1024} KB) in "
+                                    f"{time.time() - paper_started:.1f}s"
                                 )
                             saved = True
                             break
@@ -376,7 +467,10 @@ class BrowserFetcher:
                         status, detail, _ = last
                         report.add(DownloadResult(paper.doi, status, detail))
                         if log:
-                            log(f"[{index}/{len(todo)}] {status}: {paper.doi} ({detail})")
+                            log(
+                                f"[{index}/{len(todo)}] {status}: {paper.doi} "
+                                f"({detail}) in {time.time() - paper_started:.1f}s"
+                            )
 
                     if self.pause:
                         time.sleep(self.pause)

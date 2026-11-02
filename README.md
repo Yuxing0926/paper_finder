@@ -149,12 +149,16 @@ python -m pf --from-csv output/tco_all.csv --download-pdfs --pdf-engine http
 
 ### Expectations: this is not a bulk PDF mirror
 
-Measured on random samples of open-access rows from a 5,971-row run:
+Measured on random 30-paper samples of open-access rows from a 5,971-row run:
 
 | Engine | Saved |
 |---|---|
-| Browser (default) | **~35-40%** of open-access rows |
+| Browser (default) | **~47%** of open-access rows |
 | Plain HTTP (`--pdf-engine http`) | ~16% |
+
+Successful downloads take 1-4 seconds; failures cost 8-25 seconds because the
+page has to load before it can be classified. Expect roughly one paper every
+12 seconds on a clean run.
 
 The hard ceiling is the metadata itself: of 5,971 rows, **2,287 are open access**
 and the other 3,684 are `closed` — no legal free copy exists for those, and the
@@ -165,10 +169,9 @@ What the browser fixes, and what it does not:
 
 | Host | Plain HTTP | Browser |
 |---|---|---|
-| Nature / Scientific Reports | 403 | **downloads** |
+| Nature / Scientific Reports / PRL | 403 | **downloads** |
 | MDPI | 403 | **downloads** |
-| IOP | block | downloads in some cases |
-| Wiley (`pdfdirect`) | 403 | landing page loads, file does not |
+| Wiley, IOP | 403 | mostly still blocked |
 | RSC, ACS, AIP, ScienceDirect, Taylor & Francis | 403 | Cloudflare challenge never clears |
 | HAL | "not a bot" page | same |
 | PMC | 403 | reCAPTCHA |
@@ -180,8 +183,14 @@ and friends are built to reject. **Run this from a campus network or a
 residential connection and the success rate is materially higher** — the code
 is unchanged, only the address differs.
 
-Hosts that never clear a challenge are detected and skipped after a 3-second
-probe rather than wasting a 45-second timeout on each.
+Hosts that never clear a challenge are detected and skipped quickly rather
+than waiting out a long timeout on each.
+
+The browser catches a PDF two ways, because publishers deliver it two ways:
+a route handler inspects every response for a `application/pdf` body (this is
+how an inline PDF is caught), and a download listener catches the save prompt.
+Whichever fires first wins, which is why a good download finishes in a couple
+of seconds.
 
 ### The manual remainder
 
