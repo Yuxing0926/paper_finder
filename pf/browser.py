@@ -460,8 +460,6 @@ class BrowserFetcher:
                                 )
                             saved = True
                             break
-                        if status == "blocked" and "challenge" in detail:
-                            break
 
                     if not saved:
                         status, detail, _ = last

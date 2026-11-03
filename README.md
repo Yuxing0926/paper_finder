@@ -151,14 +151,19 @@ python -m pf --from-csv output/tco_all.csv --download-pdfs --pdf-engine http
 
 Measured on random 30-paper samples of open-access rows from a 5,971-row run:
 
-| Engine | Saved |
-|---|---|
-| Browser (default) | **~47%** of open-access rows |
-| Plain HTTP (`--pdf-engine http`) | ~16% |
+A full run over all 2,287 open-access rows from this table:
+
+| Outcome | Rows | Share |
+|---|---|---|
+| PDF saved | **751** | 33% |
+| Bot challenge / hard block | 906 | 40% |
+| Landing page with no downloadable file | 630 | 27% |
+| Plain HTTP engine instead | ~16% | — |
 
 Successful downloads take 1-4 seconds; failures cost 8-25 seconds because the
 page has to load before it can be classified. Expect roughly one paper every
-12 seconds on a clean run.
+12 seconds, so a 2,300-row run takes several hours. Interrupting is safe:
+papers already on disk are skipped on the next run.
 
 The hard ceiling is the metadata itself: of 5,971 rows, **2,287 are open access**
 and the other 3,684 are `closed` — no legal free copy exists for those, and the
@@ -361,7 +366,7 @@ The tests are pure logic and never touch the network. They cover token boundarie
 - **Crossref depth is capped.** Crossref rejects `offset + rows > 10000`, so at most 10,000 candidates per query can be scanned. Relevance also degrades with depth: the first 1,000 records are ~90% on-topic, and by offset 3,000 that drops to ~37%.
 - **Abstracts are missing for ~36% of papers.** Neither source has them; this is a metadata gap, not a bug.
 - **Affiliations reflect OpenAlex's data.** Some publishers deposit institution names only for the corresponding author, so the list can contain blanks for other authors.
-- **PDF download works for a minority of papers.** Roughly 35-40% of open-access rows download from a cloud IP, and the rest sit behind anti-bot protection. The rate depends heavily on the network: a campus or residential connection does considerably better than a datacentre, because that is what the protections key on. Use the `download_failed.ris` + Zotero route for the remainder.
+- **PDF download works for roughly a third of papers.** Measured end-to-end: 751 of 2,287 open-access rows. The rest sit behind anti-bot protection, and the rate depends heavily on the network — a campus or residential connection does considerably better than a datacentre (the reference run came from a Hong Kong cloud address), because that is what the protections key on. Use the `download_failed.ris` + Zotero route for the remainder.
 - **No paywall circumvention.** Rows marked `closed` are never fetched from shadow libraries; they are left for your institutional subscription.
 - **Reference exports require a DOI.** Records without one are skipped by the RIS/BibTeX writers rather than emitted with a guessed key.
 

@@ -214,7 +214,7 @@ class PdfFetcher:
         # Transient failure: do not cache, so a retry can still succeed.
         return {}
 
-    def _openalex_pdf(self, doi: str) -> Optional[str]:
+    def _openalex_pdf(self, doi: str) -> List[str]:
         params = {
             "filter": f"doi:{doi}",
             "select": "id,best_oa_location,locations",
@@ -226,17 +226,19 @@ class PdfFetcher:
             response.raise_for_status()
             results = response.json().get("results") or []
         except Exception:
-            return None
+            return []
         if not results:
-            return None
+            return []
         work = results[0]
+        urls = []
         best = (work.get("best_oa_location") or {}).get("pdf_url")
         if best:
-            return best
+            urls.append(best)
         for location in work.get("locations") or []:
-            if location.get("pdf_url"):
-                return location["pdf_url"]
-        return None
+            url = location.get("pdf_url")
+            if url and url not in urls:
+                urls.append(url)
+        return urls
 
     def candidate_links(self, paper: Paper) -> List[str]:
         links: List[str] = []
@@ -245,8 +247,7 @@ class PdfFetcher:
             url = location.get("url_for_pdf") or location.get("url")
             if url:
                 links.append(url)
-        fallback = self._openalex_pdf(paper.doi)
-        if fallback:
+        for fallback in self._openalex_pdf(paper.doi) or []:
             links.append(fallback)
         # preserve order, drop duplicates, drop unusable local/proxy targets
         usable = []
