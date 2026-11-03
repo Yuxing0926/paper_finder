@@ -407,6 +407,39 @@ Note that a PDF being present does not imply a redistribution licence. The
 licensed, and `green` is a repository copy. Check the individual article
 before republishing any of these files.
 
+## OpenAlex API key
+
+The anonymous budget is $0.10/day (about 100 list calls), shared by everyone
+on your IP. A **free** key raises it to **$1.00/day** — ten times — plus a
+30 req/s rate limit instead of 10. No payment details are involved.
+
+```bash
+curl -X POST https://api.openalex.org/api-keys \
+  -H "Content-Type: application/json" \
+  -d '{"email": "you@example.com"}'
+```
+
+The response contains `api_key` and emails that address an activation link.
+The key stays dead until the link is clicked (API calls return `403
+key_not_activated`), and the link expires after seven days. You can also sign
+up at <https://openalex.org/signup> and copy the key from Settings → API key.
+
+Give the key to the tool through the environment, not through a file you
+commit:
+
+```bash
+export OPENALEX_API_KEY=your_key_here
+python -m pf --channel TCO_SPUTTER -o output/tco_magnetron.csv
+```
+
+`config.yaml` also accepts `openalex_api_key`, but the environment variable
+takes precedence so a shell session can override it without editing anything.
+Keys committed to git have to be rotated, which is why the config default is
+an empty string.
+
+A free key also unlocks cursor paging past the first page, which the discovery
+pass uses when a broad search returns more than 10,000 works.
+
 ## Caching
 
 Every enriched paper is stored in SQLite keyed by DOI (`output/cache.db`). A rerun re-scans Crossref but skips the OpenAlex calls for DOIs already present, so repeated runs consume almost no budget. Use `--no-cache` to bypass it, or delete the file to start fresh.

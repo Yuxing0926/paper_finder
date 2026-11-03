@@ -143,3 +143,9 @@ pv_keywords:
   - cell
   - cells
   - tandem
+# OpenAlex API key. Leave this empty and set the OPENALEX_API_KEY environment
+# variable instead -- a key committed to git has to be rotated.
+# Free keys raise the daily budget from $0.10 to $1.00:
+#   curl -X POST https://api.openalex.org/api-keys \
+#        -H "Content-Type: application/json" -d '{"email": "you@example.com"}'
+openalex_api_key: ""

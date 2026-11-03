@@ -32,6 +32,17 @@ def log(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
 
 
+def resolve_api_key(config: dict) -> str:
+    """API keys come from the environment first, then config.yaml.
+
+    Keeping the key out of the repository is the point of the env var: a key
+    committed to git is a key that has to be rotated.
+    """
+    import os
+
+    return (os.environ.get("OPENALEX_API_KEY") or config.get("openalex_api_key") or "").strip()
+
+
 def load_config(path: Optional[Path]) -> dict:
     candidate = Path(path) if path else DEFAULT_CONFIG
     if not candidate.exists():
@@ -370,6 +381,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     config = load_config(Path(args.config) if args.config else None)
     defaults = config.get("defaults") or {}
     email = config.get("email", "")
+    api_key = resolve_api_key(config)
     pv_keywords = list(config.get("pv_keywords") or [])
     pdf_root = Path(args.pdf_dir) if args.pdf_dir else Path("output/pdfs")
 
@@ -422,6 +434,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if oa_queries and not args.no_openalex_search:
         openalex_for_search = OpenAlex(
             email=email,
+            api_key=api_key,
             min_remaining_usd=float(defaults.get("min_remaining_usd", 0.02)),
         )
         log(f"\nOpenAlex discovery: {len(oa_queries)} queries")
@@ -471,6 +484,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     works: Dict[str, dict] = {}
     openalex = OpenAlex(
         email=email,
+        api_key=api_key,
         batch_size=int(defaults.get("oa_batch", 100)),
         min_remaining_usd=float(defaults.get("min_remaining_usd", 0.02)),
     )

@@ -103,6 +103,7 @@ class OpenAlex:
     def __init__(
         self,
         email: str = "",
+        api_key: str = "",
         batch_size: int = MAX_BATCH,
         pause: float = 0.2,
         timeout: int = 90,
@@ -110,6 +111,7 @@ class OpenAlex:
         min_remaining_usd: float = 0.02,
         session: Optional[requests.Session] = None,
     ) -> None:
+        self.api_key = api_key
         self.batch_size = min(batch_size, MAX_BATCH)
         self.pause = pause
         self.timeout = timeout
@@ -129,6 +131,14 @@ class OpenAlex:
         self.email = email
 
     def _request(self, params: dict) -> dict:
+        # Attach auth here rather than at each call site so no request can
+        # accidentally go out keyless and draw from the tiny anonymous budget.
+        if self.api_key:
+            params = dict(params)
+            params["api_key"] = self.api_key
+        if self.email:
+            params = dict(params)
+            params.setdefault("mailto", self.email)
         last_error: Optional[Exception] = None
         for attempt in range(self.retries):
             try:
@@ -175,8 +185,6 @@ class OpenAlex:
             "per_page": len(doi_list),
             "select": SELECT_FIELDS,
         }
-        if self.email:
-            params["mailto"] = self.email
         payload = self._request(params)
         results: Dict[str, dict] = {}
         for work in payload.get("results") or []:
@@ -284,8 +292,6 @@ class OpenAlex:
                     "page": page,
                     "select": "id,doi,title,publication_year",
                 }
-                if self.email:
-                    params["mailto"] = self.email
                 try:
                     payload = self._request(params)
                 except OpenAlexBudgetError:
