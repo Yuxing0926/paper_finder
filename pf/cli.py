@@ -169,7 +169,10 @@ def discover_papers(
         for spec in specs:
             query = spec.get("query", "")
             must = spec.get("must") or []
-            log(f"[{name}] query={query!r} depth={depth} since={since}")
+            # A channel entry may widen matching to the abstract, which is how
+            # deposition techniques are usually reported.
+            spec_match = spec.get("match") or match_field
+            log(f"[{name}] query={query!r} depth={depth} since={since} match={spec_match}")
             records = crossref.discover(
                 query=query,
                 must=must,
@@ -177,7 +180,7 @@ def discover_papers(
                 since=since,
                 depth=depth,
                 doc_type=doc_type,
-                match_field=match_field,
+                match_field=spec_match,
                 log=log,
             )
             added = absorb(records)

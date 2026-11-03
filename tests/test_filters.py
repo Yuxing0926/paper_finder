@@ -102,3 +102,33 @@ class TestAutoGroups(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestSputterChannel(unittest.TestCase):
+    """The TCO_SPUTTER channel needs topic AND technique to both match."""
+
+    GROUPS = [
+        ["transparent*", "tco", "ito", "azo", "gzo", "fto", "itazo", "indium tin oxide"],
+        ["conduc*", "electrode*"],
+        ["sputter*", "magnetron", "rf sputter*", "dc sputter*"],
+    ]
+
+    def test_accepts_magnetron_sputtered_film(self):
+        title = "Al-doped ZnO transparent conductive films deposited by RF magnetron sputtering"
+        self.assertTrue(matches_groups(title, self.GROUPS))
+
+    def test_accepts_sputtered_in_abstract_only(self):
+        title = "Transparent conducting oxide films for solar cells"
+        abstract = "The ITO layers were grown by DC magnetron sputtering at room temperature."
+        self.assertTrue(matches_groups(f"{title} {abstract}", self.GROUPS))
+
+    def test_rejects_non_sputtered_preparation(self):
+        title = "Transparent conductive oxide films by sol-gel spin coating"
+        self.assertFalse(matches_groups(title, self.GROUPS))
+
+    def test_rejects_spin_coated_even_with_oxide(self):
+        title = "Highly conductive transparent ZnO oxide prepared by spray pyrolysis"
+        self.assertFalse(matches_groups(title, self.GROUPS))
+
+    def test_rejects_sputtering_of_unrelated_material(self):
+        title = "Magnetron sputtering of titanium nitride hard coatings"
+        self.assertFalse(matches_groups(title, self.GROUPS))

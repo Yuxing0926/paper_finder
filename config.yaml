@@ -38,6 +38,41 @@ channels:
         - [transparent*, tco, ito, azo, gzo, fto, itazo, "indium tin oxide"]
         - [conduc*, electrode*]
 
+  # TCO produced by sputtering. The two groups below keep the topic (TCO) and
+  # the technique (sputter/magnetron) separate, so a paper must satisfy both.
+  # Matching runs on title+abstract here: only ~4% of TCO titles say "sputter",
+  # but the abstract almost always names the deposition method.
+  TCO_SPUTTER:
+    - query: transparent conductive oxide sputtering
+      must:
+        - [transparent*, tco, ito, azo, gzo, fto, itazo, "indium tin oxide"]
+        - [conduc*, electrode*]
+        - [sputter*, magnetron, "rf sputter*", "dc sputter*"]
+      match: title_abstract
+    - query: transparent conducting oxide sputtering
+      must:
+        - [transparent*, tco, ito, azo, gzo, fto, itazo, "indium tin oxide"]
+        - [conduc*, electrode*]
+        - [sputter*, magnetron, "rf sputter*", "dc sputter*"]
+      match: title_abstract
+    - query: sputtered transparent conductive oxide
+      must:
+        - [transparent*, tco, ito, azo, gzo, fto, itazo, "indium tin oxide"]
+        - [conduc*, electrode*]
+        - [sputter*, magnetron, "rf sputter*", "dc sputter*"]
+      match: title_abstract
+    - query: magnetron sputtering transparent conductive oxide
+      must:
+        - [transparent*, tco, ito, azo, gzo, fto, itazo, "indium tin oxide"]
+        - [conduc*, electrode*]
+        - [sputter*, magnetron, "rf sputter*", "dc sputter*"]
+      match: title_abstract
+    - query: sputtered indium tin oxide
+      must:
+        - ["indium tin oxide", ito, "al doped zno", azo, "fluorine doped tin oxide", fto]
+        - [sputter*, magnetron, "rf sputter*", "dc sputter*"]
+      match: title_abstract
+
   ITO:
     - query: indium tin oxide
       must:
