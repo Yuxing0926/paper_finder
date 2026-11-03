@@ -46,40 +46,57 @@ channels:
   # (ion-beam, reactive without a magnetron) are excluded on purpose: the
   # project's films come off a magnetron target.
   TCO_SPUTTER:
-    - query: transparent conductive oxide magnetron sputtering
-      must:
-        - [transparent*, tco, ito, azo, gzo, fto, itazo, "indium tin oxide"]
-        - [conduc*, electrode*]
-        - [magnetron]
-      match: title_abstract
-      depth: 10000
-    - query: transparent conducting oxide magnetron sputtering
-      must:
-        - [transparent*, tco, ito, azo, gzo, fto, itazo, "indium tin oxide"]
-        - [conduc*, electrode*]
-        - [magnetron]
-      match: title_abstract
-      depth: 10000
-    - query: magnetron sputtered transparent conductive oxide
-      must:
-        - [transparent*, tco, ito, azo, gzo, fto, itazo, "indium tin oxide"]
-        - [conduc*, electrode*]
-        - [magnetron]
-      match: title_abstract
-      depth: 10000
-    - query: magnetron sputtering transparent conducting oxide film
-      must:
-        - [transparent*, tco, ito, azo, gzo, fto, itazo, "indium tin oxide"]
-        - [conduc*, electrode*]
-        - [magnetron]
-      match: title_abstract
-      depth: 10000
-    - query: magnetron sputtered indium tin oxide
-      must:
-        - ["indium tin oxide", ito, "al doped zno", azo, "fluorine doped tin oxide", fto]
-        - [magnetron]
-      match: title_abstract
-      depth: 10000
+    queries:
+      - query: transparent conductive oxide magnetron sputtering
+        must:
+          - [transparent*, tco, ito, azo, gzo, fto, itazo, "indium tin oxide"]
+          - [conduc*, electrode*]
+          - [magnetron]
+        match: title_abstract
+        depth: 10000
+      - query: transparent conducting oxide magnetron sputtering
+        must:
+          - [transparent*, tco, ito, azo, gzo, fto, itazo, "indium tin oxide"]
+          - [conduc*, electrode*]
+          - [magnetron]
+        match: title_abstract
+        depth: 10000
+      - query: magnetron sputtered transparent conductive oxide
+        must:
+          - [transparent*, tco, ito, azo, gzo, fto, itazo, "indium tin oxide"]
+          - [conduc*, electrode*]
+          - [magnetron]
+        match: title_abstract
+        depth: 10000
+      - query: magnetron sputtering transparent conducting oxide film
+        must:
+          - [transparent*, tco, ito, azo, gzo, fto, itazo, "indium tin oxide"]
+          - [conduc*, electrode*]
+          - [magnetron]
+        match: title_abstract
+        depth: 10000
+      - query: magnetron sputtered indium tin oxide
+        must:
+          - ["indium tin oxide", ito, "al doped zno", azo, "fluorine doped tin oxide", fto]
+          - [magnetron]
+        match: title_abstract
+        depth: 10000
+    # Second discovery index. Crossref ranks query.title by relevance and drops
+    # work whose title words differ, so a paper titled "ITO films grown by RF
+    # magnetron sputtering" never surfaces for the phrase "transparent
+    # conducting oxide". OpenAlex searches title+abstract server-side instead.
+    # Each entry is one search clause; results are merged and deduplicated.
+    openalex_queries:
+      - magnetron sputtering transparent conducting oxide
+      - magnetron sputtering transparent conductive oxide
+      - magnetron sputtering indium tin oxide
+      - magnetron sputtering aluminum doped zinc oxide
+      - magnetron sputtering fluorine doped tin oxide
+      - magnetron sputtering al doped zno
+      - magnetron sputtering ITO film
+      - magnetron sputtering TCO
+      - RF magnetron sputtering transparent conductive
+      - DC magnetron sputtering transparent conductive
 
   ITO:
     - query: indium tin oxide

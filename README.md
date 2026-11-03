@@ -94,6 +94,7 @@ python -m pf --all --no-cache -o output/fresh.csv
 | `--config` | config path | `./config.yaml` |
 | `--cache` | SQLite cache path | `output/cache.db` |
 | `--no-cache` | ignore and do not write the cache | off |
+| `--no-openalex-search` | skip the OpenAlex discovery pass | off |
 | `--dry-run` | discovery only, no OpenAlex calls | off |
 | `--download-pdfs` | fetch open-access PDFs in a browser after writing the CSV | off |
 | `--pdf-dir` | where PDFs are stored | `output/pdfs` |
@@ -330,9 +331,33 @@ misleading here: the first 1,000 candidates yield 152 matches, but offsets
 1,000-9,000 add another 175, so a depth of 4,000 loses about a third of the
 literature.
 
-Measured result: **480 papers**, 77% with an abstract, 92% with affiliations.
-Only two rows lack the word "magnetron" in their stored text, and both are
-records where Crossref supplied no abstract.
+### Why Crossref alone under-collects
+
+Crossref's `query.title` ranks by relevance but only over records whose title
+contains the query words. A paper titled "ITO films grown by RF magnetron
+sputtering" never surfaces for the phrase "transparent conducting oxide", even
+though it is exactly the right paper. Scanning deeper does not help: the
+filter passes 152 of the first 1,000 candidates and then yields 15-30 per
+thousand for the rest of the 10,000 ceiling.
+
+That is why every channel may also carry an `openalex_queries` list. OpenAlex
+searches title **and abstract** server-side, so papers that describe the topic
+in their abstract but name the material differently in the title are found.
+Results from both indexes are merged and deduplicated by DOI.
+
+```yaml
+TCO_SPUTTER:
+  queries:            # Crossref: ranked, title-oriented
+    - query: transparent conductive oxide magnetron sputtering
+      must: [...]
+  openalex_queries:   # OpenAlex: server-side, searches abstract too
+    - magnetron sputtering indium tin oxide
+    - magnetron sputtering ITO film
+```
+
+Measured effect on this topic: Crossref found 480 records; the OpenAlex pass
+surfaces roughly 1,300 more candidates, of which about 500 survive the same
+three-group filter. Run with `--no-openalex-search` to skip the second pass.
 
 ## Measured results
 

@@ -68,6 +68,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-cache", action="store_true", help="ignore and do not write the cache")
     parser.add_argument("--dry-run", action="store_true", help="discover only; do not call OpenAlex")
     parser.add_argument(
+        "--no-openalex-search",
+        action="store_true",
+        help="skip OpenAlex keyword search; use Crossref discovery only",
+    )
+    parser.add_argument(
         "--download-pdfs",
         action="store_true",
         help="after writing the CSV, download open-access PDFs in a real browser",
@@ -124,12 +129,28 @@ def parse_must_specs(specs: Sequence[Sequence[str]]) -> List[List[str]]:
     return groups
 
 
-def resolve_channels(args, config: dict) -> List[tuple[str, list]]:
-    """Return ``[(channel_name, [query_spec, ...]), ...]`` for this run."""
-    configured: Dict[str, list] = config.get("channels") or {}
+def normalize_channel(spec) -> tuple[list, list]:
+    """Split a channel definition into ``(queries, openalex_queries)``.
+
+    A channel may be written as a bare list of query entries, or as a mapping
+    with ``queries`` and ``openalex_queries`` keys. The latter adds the second
+    discovery index described in the README.
+    """
+    if isinstance(spec, dict):
+        return list(spec.get("queries") or []), list(spec.get("openalex_queries") or [])
+    return list(spec or []), []
+
+
+def resolve_channels(args, config: dict) -> List[tuple[str, list, list]]:
+    """Return ``[(channel_name, queries, openalex_queries), ...]`` for this run."""
+    configured: Dict[str, object] = config.get("channels") or {}
+
+    def pack(name: str) -> tuple[str, list, list]:
+        queries, oa_queries = normalize_channel(configured[name])
+        return name, queries, oa_queries
 
     if args.all:
-        return [(name, spec) for name, spec in configured.items()]
+        return [pack(name) for name in configured]
     if args.channel:
         selected = []
         for name in args.channel:
@@ -137,7 +158,7 @@ def resolve_channels(args, config: dict) -> List[tuple[str, list]]:
                 raise SystemExit(
                     f"Unknown channel {name!r}; available: {sorted(configured)}"
                 )
-            selected.append((name, configured[name]))
+            selected.append(pack(name))
         return selected
     return []
 
@@ -165,7 +186,7 @@ def discover_papers(
                 added += 1
         return added
 
-    for name, specs in channels:
+    for name, specs, oa_queries in channels:
         for spec in specs:
             query = spec.get("query", "")
             must = spec.get("must") or []
@@ -393,6 +414,38 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     discovered = discover_papers(args, config, channels, defaults, crossref)
     log(f"\ndiscovery finished: {len(discovered)} unique DOIs "
         f"({crossref.requests_made} Crossref requests)")
+
+    # Second discovery pass. Worth the extra calls: Crossref's relevance
+    # ranking silently drops papers whose title names the material differently,
+    # which is most of them.
+    oa_queries = [q for _, _, queries in channels for q in queries]
+    if oa_queries and not args.no_openalex_search:
+        openalex_for_search = OpenAlex(
+            email=email,
+            min_remaining_usd=float(defaults.get("min_remaining_usd", 0.02)),
+        )
+        log(f"\nOpenAlex discovery: {len(oa_queries)} queries")
+        try:
+            extra = openalex_for_search.discover(
+                oa_queries,
+                channel=channels[0][0] if channels else "custom",
+                since=effective_since,
+                max_records=int(defaults.get("oa_search_max", 4000)),
+                log=log,
+            )
+            added = 0
+            for doi, record in extra.items():
+                if doi not in discovered:
+                    discovered[doi] = record
+                    added += 1
+            log(
+                f"OpenAlex discovery: {len(extra)} found, {added} new, "
+                f"cost ${openalex_for_search.cost_usd:.4f}"
+            )
+        except OpenAlexBudgetError as exc:
+            log(f"! {exc}")
+        except OpenAlexError as exc:
+            log(f"! OpenAlex discovery failed: {exc}")
 
     if args.dry_run:
         by_channel: Dict[str, int] = {}

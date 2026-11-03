@@ -240,3 +240,91 @@ class OpenAlex:
             keywords=_keywords_of(work),
         )
         return paper
+    def discover(
+        self,
+        filters: List[List[str]],
+        channel: str,
+        since: Optional[int] = None,
+        max_records: int = 4000,
+        log=None,
+    ) -> Dict[str, dict]:
+        """Find works by server-side keyword search.
+
+        ``filters`` is a list of search clauses, ANDed together; the caller
+        supplies several of them because a single phrase misses papers that
+        phrase the topic differently. This complements Crossref rather than
+        replacing it: Crossref ranks ``query.title`` by relevance and silently
+        drops work whose title does not contain every query word, which loses
+        ground whenever the title calls the material something else.
+
+        Only DOIs are stored; the full record arrives through ``enrich``.
+        """
+        collected: Dict[str, dict] = {}
+        per_page = 200
+        for clause in filters:
+            page = 1
+            # Cap per clause, not overall, otherwise the first phrase that
+            # happens to be broad can consume the whole allowance and the
+            # remaining phrases never run.
+            served_here = 0
+            while served_here < max_records:
+                self._check_budget()
+                params = {
+                    "filter": ",".join(
+                        [
+                            f"title_and_abstract.search:{clause}",
+                            *(
+                                [f"from_publication_date:{since}-01-01"]
+                                if since
+                                else []
+                            ),
+                        ]
+                    ),
+                    "per_page": per_page,
+                    "page": page,
+                    "select": "id,doi,title,publication_year",
+                }
+                if self.email:
+                    params["mailto"] = self.email
+                try:
+                    payload = self._request(params)
+                except OpenAlexBudgetError:
+                    raise
+                except OpenAlexError as exc:
+                    if log:
+                        log(f"  ! OpenAlex discovery page {page} failed: {exc}")
+                    break
+
+                results = payload.get("results") or []
+                new = 0
+                for work in results:
+                    from ..models import norm_doi
+
+                    doi = norm_doi(work.get("doi"))
+                    if not doi or doi in collected:
+                        continue
+                    collected[doi] = {
+                        "doi": doi,
+                        "title": " ".join(str(work.get("title") or "").split()),
+                        "year": str(work.get("publication_year") or ""),
+                        "journal": "",
+                        "abstract": "",
+                        "url": f"https://doi.org/{doi}",
+                        "channel": channel,
+                    }
+                    new += 1
+                served_here += len(results)
+                if log:
+                    log(
+                        f"  [oa] {clause[:44]!r} page {page}: "
+                        f"+{new} total={len(collected)} cost=${self.cost_usd:.4f}"
+                    )
+                meta = payload.get("meta") or {}
+                if len(results) < per_page:
+                    break
+                if page * per_page >= (meta.get("count") or 0):
+                    break
+                page += 1
+                if self.pause:
+                    time.sleep(self.pause)
+        return collected
