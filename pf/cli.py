@@ -325,18 +325,21 @@ def run_pdf_download(
 
     needs_manual = [r for r in report.results if r.status != "saved"]
     if needs_manual:
-        miss_path = root.parent / "download_failed.csv"
+        # Name the failure list after the PDF directory so separate runs
+        # (pdfs, pdfs2, ...) do not overwrite each other's lists.
+        stem = root.name
+        miss_path = root.parent / f"{stem}_failed.csv"
         by_doi = {p.doi: p for p in targets}
         rows = [by_doi[r.doi] for r in needs_manual if r.doi in by_doi]
         write_csv(rows, miss_path)
         refs_dir = root.parent / "references"
-        ris_count = write_ris(rows, refs_dir / "download_failed.ris")
-        write_bibtex(rows, refs_dir / "download_failed.bib")
+        ris_count = write_ris(rows, refs_dir / f"{stem}_failed.ris")
+        write_bibtex(rows, refs_dir / f"{stem}_failed.bib")
         log(f"\n{len(rows)} of {len(targets)} papers still need manual fetching")
         log(f"  ({len(report.closed)} are closed access)")
         log(f"  list  : {miss_path}")
-        log(f"  RIS   : {refs_dir / 'download_failed.ris'} ({ris_count} records)")
-        log(f"  BibTeX: {refs_dir / 'download_failed.bib'}")
+        log(f"  RIS   : {refs_dir / f'{stem}_failed.ris'} ({ris_count} records)")
+        log(f"  BibTeX: {refs_dir / f'{stem}_failed.bib'}")
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
