@@ -357,6 +357,31 @@ Run of `--all` on 2026-11-01, `since: 2015`, `depth: 4000` per query:
 
 Abstract coverage is capped by the sources themselves — OpenAlex supplies an abstract for roughly two thirds of works and Crossref for roughly a third — not by the tool.
 
+## Included dataset: magnetron-sputtered TCO
+
+The `TCO_SPUTTER` output is committed to this repository so the corpus can be
+used without re-running anything:
+
+```
+output/tco_magnetron.csv       480 papers, full metadata (17 columns)
+output/tco_magnetron_oa.csv    244 of those with an open-access copy
+output/pdfs2/<year>/...        117 downloaded PDFs (~425 MB)
+output/pdfs2_failed.csv        128 rows that could not be downloaded
+```
+
+The PDFs are named `<first-author>_<year>_<journal>.pdf` and filed by
+publication year. Every file starts with `%PDF`; there are no partial or
+zero-byte downloads.
+
+Only the magnetron corpus is tracked. Everything else under `output/` stays
+ignored — see `.gitignore`, where the exceptions are listed explicitly.
+
+Note that a PDF being present does not imply a redistribution licence. The
+`oa_status` column records what each source reported: `gold`, `diamond` and
+`hybrid` are openly licensed, `bronze` is free to read but not openly
+licensed, and `green` is a repository copy. Check the individual article
+before republishing any of these files.
+
 ## Caching
 
 Every enriched paper is stored in SQLite keyed by DOI (`output/cache.db`). A rerun re-scans Crossref but skips the OpenAlex calls for DOIs already present, so repeated runs consume almost no budget. Use `--no-cache` to bypass it, or delete the file to start fresh.

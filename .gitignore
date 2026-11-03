@@ -1,4 +1,6 @@
-output/
+# Everything generated is ignored by default. `output/` itself is not
+# excluded (no trailing slash) so the negation rules below can reach inside it.
+output/*
 *.db
 *.csv
 __pycache__/
@@ -8,3 +10,10 @@ __pycache__/
 venv/
 *.egg-info/
 .DS_Store
+
+# Exceptions: the magnetron-sputtering corpus is checked in on purpose, so the
+# collected PDFs and their metadata travel with the repository.
+!output/pdfs2/
+!output/tco_magnetron.csv
+!output/tco_magnetron_oa.csv
+!output/pdfs2_failed.csv
