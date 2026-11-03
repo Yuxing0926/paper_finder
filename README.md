@@ -292,25 +292,47 @@ channels:
 
 Both spellings matter: "transparent conductive oxide" and "transparent conducting oxide" barely overlap in Crossref (945 versus 837 title hits), so dropping either one loses roughly half the literature.
 
-To add a channel, append a new key under `channels` with a list of `{query, must}` entries, then run `python -m pf --channel YOURS`. A query entry may also set `match: title_abstract` to widen matching beyond the title.
+To add a channel, append a new key under `channels` with a list of `{query, must}` entries, then run `python -m pf --channel YOURS`. A query entry may also set `match: title_abstract` to widen matching beyond the title, and `depth` to scan deeper than the global default.
 
 ### Deposition technique: `TCO_SPUTTER`
 
-`TCO` alone returns every transparent conducting oxide, regardless of how it was made. The `TCO_SPUTTER` channel narrows that to films produced by sputtering, which is what most device work uses:
+`TCO` alone returns every transparent conducting oxide, regardless of how it
+was made. `TCO_SPUTTER` narrows that to films grown by **magnetron sputtering**,
+which is what this project uses:
 
 ```bash
-python -m pf --channel TCO_SPUTTER -o output/tco_sputter.csv
+python -m pf --channel TCO_SPUTTER -o output/tco_magnetron.csv
 ```
 
-Matching runs on **title and abstract** here, because only about 4% of TCO titles mention the technique while the abstract almost always names it. A paper must satisfy all three groups:
+Matching runs on **title and abstract**, because only about 4% of TCO titles
+name the technique while the abstract almost always does. A paper must satisfy
+all three groups:
 
-1. the TCO term (`transparent*`, `tco`, `ito`, `azo`, `gzo`, `fto`, nickname `indium tin oxide`)
+1. the TCO term (`transparent*`, `tco`, `ito`, `azo`, `gzo`, `fto`, `indium tin oxide`)
 2. the conductive/electrode term
-3. the technique term (`sputter*`, `magnetron`, `rf sputter*`, `dc sputter*`)
+3. the technique term — **`magnetron`**, not bare "sputter"
 
-Five Crossref queries feed it (`transparent conductive oxide sputtering`, `transparent conducting oxide sputtering`, `sputtered transparent conductive oxide`, `magnetron sputtering transparent conductive oxide`, `sputtered indium tin oxide`), all merged and deduplicated by DOI.
+Requiring `magnetron` rather than `sputter*` is deliberate: it excludes
+ion-beam sputtering, and the project's films come off a magnetron target.
 
-Measured result: **628 papers**, 72% with an abstract, 94% with affiliations. Spot-checking a random sample of titles shows they are all sputter-deposited TCO work.
+Five Crossref queries feed the channel, merged by DOI:
+
+```
+transparent conductive oxide magnetron sputtering
+transparent conducting oxide magnetron sputtering
+magnetron sputtered transparent conductive oxide
+magnetron sputtering transparent conducting oxide film
+magnetron sputtered indium tin oxide
+```
+
+Each is scanned to depth 10,000 (Crossref's hard ceiling). Shallow scans are
+misleading here: the first 1,000 candidates yield 152 matches, but offsets
+1,000-9,000 add another 175, so a depth of 4,000 loses about a third of the
+literature.
+
+Measured result: **480 papers**, 77% with an abstract, 92% with affiliations.
+Only two rows lack the word "magnetron" in their stored text, and both are
+records where Crossref supplied no abstract.
 
 ## Measured results
 

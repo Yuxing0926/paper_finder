@@ -103,23 +103,27 @@ class TestAutoGroups(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-class TestSputterChannel(unittest.TestCase):
-    """The TCO_SPUTTER channel needs topic AND technique to both match."""
+class TestMagnetronChannel(unittest.TestCase):
+    """The TCO_SPUTTER channel requires magnetron sputtering specifically."""
 
     GROUPS = [
         ["transparent*", "tco", "ito", "azo", "gzo", "fto", "itazo", "indium tin oxide"],
         ["conduc*", "electrode*"],
-        ["sputter*", "magnetron", "rf sputter*", "dc sputter*"],
+        ["magnetron"],
     ]
 
-    def test_accepts_magnetron_sputtered_film(self):
-        title = "Al-doped ZnO transparent conductive films deposited by RF magnetron sputtering"
+    def test_accepts_rf_magnetron(self):
+        title = "Al-doped ZnO transparent conductive films grown by RF magnetron sputtering"
         self.assertTrue(matches_groups(title, self.GROUPS))
 
-    def test_accepts_sputtered_in_abstract_only(self):
+    def test_accepts_magnetron_in_abstract_only(self):
         title = "Transparent conducting oxide films for solar cells"
         abstract = "The ITO layers were grown by DC magnetron sputtering at room temperature."
         self.assertTrue(matches_groups(f"{title} {abstract}", self.GROUPS))
+
+    def test_rejects_plain_sputtering_without_magnetron(self):
+        title = "Transparent conductive oxide films deposited by ion beam sputtering"
+        self.assertFalse(matches_groups(title, self.GROUPS))
 
     def test_rejects_non_sputtered_preparation(self):
         title = "Transparent conductive oxide films by sol-gel spin coating"
@@ -129,6 +133,6 @@ class TestSputterChannel(unittest.TestCase):
         title = "Highly conductive transparent ZnO oxide prepared by spray pyrolysis"
         self.assertFalse(matches_groups(title, self.GROUPS))
 
-    def test_rejects_sputtering_of_unrelated_material(self):
+    def test_rejects_magnetron_of_unrelated_material(self):
         title = "Magnetron sputtering of titanium nitride hard coatings"
         self.assertFalse(matches_groups(title, self.GROUPS))
