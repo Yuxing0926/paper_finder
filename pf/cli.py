@@ -84,6 +84,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="skip OpenAlex keyword search; use Crossref discovery only",
     )
     parser.add_argument(
+        "--no-epmc",
+        action="store_true",
+        help="skip Europe PMC discovery (the service is often unavailable)",
+    )
+    parser.add_argument(
         "--download-pdfs",
         action="store_true",
         help="after writing the CSV, download open-access PDFs in a real browser",
@@ -140,25 +145,30 @@ def parse_must_specs(specs: Sequence[Sequence[str]]) -> List[List[str]]:
     return groups
 
 
-def normalize_channel(spec) -> tuple[list, list]:
-    """Split a channel definition into ``(queries, openalex_queries)``.
+def normalize_channel(spec) -> tuple[list, list, list, list]:
+    """Split a channel into its Crossref, OpenAlex, arXiv and Europe PMC queries.
 
-    A channel may be written as a bare list of query entries, or as a mapping
-    with ``queries`` and ``openalex_queries`` keys. The latter adds the second
-    discovery index described in the README.
+    A channel may be a bare list of Crossref query entries, or a mapping that
+    additionally names supplementary indexes. Each supplement is optional, so
+    a definition opts into whichever adds coverage for its topic.
     """
     if isinstance(spec, dict):
-        return list(spec.get("queries") or []), list(spec.get("openalex_queries") or [])
-    return list(spec or []), []
+        return (
+            list(spec.get("queries") or []),
+            list(spec.get("openalex_queries") or []),
+            list(spec.get("arxiv_queries") or []),
+            list(spec.get("europepmc_queries") or []),
+        )
+    return list(spec or []), [], [], []
 
 
-def resolve_channels(args, config: dict) -> List[tuple[str, list, list]]:
-    """Return ``[(channel_name, queries, openalex_queries), ...]`` for this run."""
+def resolve_channels(args, config: dict) -> List[tuple[str, list, list, list, list]]:
+    """``[(name, crossref, openalex, arxiv, europepmc), ...]`` for this run."""
     configured: Dict[str, object] = config.get("channels") or {}
 
-    def pack(name: str) -> tuple[str, list, list]:
-        queries, oa_queries = normalize_channel(configured[name])
-        return name, queries, oa_queries
+    def pack(name: str) -> tuple[str, list, list, list, list]:
+        queries, oa, arx, epmc = normalize_channel(configured[name])
+        return name, queries, oa, arx, epmc
 
     if args.all:
         return [pack(name) for name in configured]
@@ -197,7 +207,7 @@ def discover_papers(
                 added += 1
         return added
 
-    for name, specs, oa_queries in channels:
+    for name, specs, _oa, _arx, _epmc in channels:
         for spec in specs:
             query = spec.get("query", "")
             must = spec.get("must") or []
@@ -320,6 +330,7 @@ def run_pdf_download(
     include_closed: bool = False,
     engine: str = "browser",
     show_browser: bool = False,
+    api_key: str = "",
 ) -> None:
     """Download open-access PDFs, defaulting to a real browser session."""
     from .pdf import PdfFetcher
@@ -339,13 +350,15 @@ def run_pdf_download(
             if not full_chromium_available():
                 log("! only headless-shell found; some publishers will refuse")
                 log("  run: python -m playwright install chromium")
-            fetcher = BrowserFetcher(root=root, email=email, headless=not show_browser)
+            fetcher = BrowserFetcher(
+                root=root, email=email, api_key=api_key, headless=not show_browser
+            )
             report = fetcher.fetch(
                 targets, log=log, include_closed=include_closed
             )
 
     if engine == "http":
-        fetcher = PdfFetcher(email=email, root=root)
+        fetcher = PdfFetcher(email=email, api_key=api_key, root=root)
         report = fetcher.fetch(targets, log=log, include_closed=include_closed)
 
     counts = report.summary()
@@ -400,7 +413,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             log(f"wrote {bib} BibTeX records to {refs_dir / f'{source.stem}.bib'}")
         if args.download_pdfs:
             run_pdf_download(papers, pdf_root, email, args.pdf_limit,
-                             args.include_closed, args.pdf_engine, args.show_browser)
+                             args.include_closed, args.pdf_engine,
+                             args.show_browser, api_key)
         if not args.refs and not args.download_pdfs:
             log("nothing to do: pass --download-pdfs and/or --refs")
         return 0
@@ -430,7 +444,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # Second discovery pass. Worth the extra calls: Crossref's relevance
     # ranking silently drops papers whose title names the material differently,
     # which is most of them.
-    oa_queries = [q for _, _, queries in channels for q in queries]
+    oa_queries = [q for _, _, oa, _, _ in channels for q in oa]
     if oa_queries and not args.no_openalex_search:
         openalex_for_search = OpenAlex(
             email=email,
@@ -439,11 +453,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         log(f"\nOpenAlex discovery: {len(oa_queries)} queries")
         try:
+            # Apply the channel's own keyword groups during discovery, so the
+            # budget is spent only on records that can actually survive.
+            oa_must = channels[0][1][0].get("must") if channels and channels[0][1] else None
             extra = openalex_for_search.discover(
                 oa_queries,
                 channel=channels[0][0] if channels else "custom",
                 since=effective_since,
                 max_records=int(defaults.get("oa_search_max", 4000)),
+                must=oa_must,
                 log=log,
             )
             added = 0
@@ -459,6 +477,48 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             log(f"! {exc}")
         except OpenAlexError as exc:
             log(f"! OpenAlex discovery failed: {exc}")
+
+    # Supplementary indexes. Neither is required: arXiv is small for materials
+    # work but always downloadable, Europe PMC has strong abstracts and is
+    # frequently down, so both are best-effort.
+    arxiv_queries = [q for _, _, _, arx, _ in channels for q in arx]
+    epmc_queries = [q for _, _, _, _, eq in channels for q in eq]
+    if arxiv_queries:
+        from .sources.arxiv import Arxiv, ArxivError
+
+        arxiv = Arxiv()
+        log(f"\narXiv discovery: {len(arxiv_queries)} queries")
+        for clause in arxiv_queries:
+            try:
+                found = arxiv.search(
+                    clause, channels[0][0] if channels else "custom", log=log
+                )
+            except ArxivError as exc:
+                log(f"! {exc}")
+                continue
+            added = 0
+            for key, record in found.items():
+                if key not in discovered:
+                    discovered[key] = record
+                    added += 1
+            log(f"  arXiv {clause[:40]!r}: +{added} new")
+
+    if epmc_queries and not args.no_epmc:
+        from .sources.europepmc import EuropePmc
+
+        epmc = EuropePmc()
+        log(f"\nEurope PMC discovery: {len(epmc_queries)} queries")
+        for clause in epmc_queries:
+            found = epmc.search(
+                clause, channels[0][0] if channels else "custom", log=log
+            )
+            added = 0
+            for key, record in found.items():
+                if key not in discovered:
+                    discovered[key] = record
+                    added += 1
+            if found:
+                log(f"  Europe PMC {clause[:40]!r}: +{added} new")
 
     if args.dry_run:
         by_channel: Dict[str, int] = {}
@@ -525,7 +585,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if args.download_pdfs:
         run_pdf_download(papers, pdf_root, email, args.pdf_limit,
-                             args.include_closed, args.pdf_engine, args.show_browser)
+                             args.include_closed, args.pdf_engine,
+                             args.show_browser, api_key)
 
     return 0
 

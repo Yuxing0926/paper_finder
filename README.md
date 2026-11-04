@@ -95,6 +95,7 @@ python -m pf --all --no-cache -o output/fresh.csv
 | `--cache` | SQLite cache path | `output/cache.db` |
 | `--no-cache` | ignore and do not write the cache | off |
 | `--no-openalex-search` | skip the OpenAlex discovery pass | off |
+| `--no-epmc` | skip the Europe PMC discovery pass | off |
 | `--dry-run` | discovery only, no OpenAlex calls | off |
 | `--download-pdfs` | fetch open-access PDFs in a browser after writing the CSV | off |
 | `--pdf-dir` | where PDFs are stored | `output/pdfs` |
@@ -152,14 +153,24 @@ python -m pf --from-csv output/tco_all.csv --download-pdfs --pdf-engine http
 
 Measured on random 30-paper samples of open-access rows from a 5,971-row run:
 
-A full run over all 2,287 open-access rows from this table:
+A full run over the 609 open-access rows of the magnetron corpus, from a Hong
+Kong datacentre address:
 
 | Outcome | Rows | Share |
 |---|---|---|
-| PDF saved | **751** | 33% |
-| Bot challenge / hard block | 906 | 40% |
-| Landing page with no downloadable file | 630 | 27% |
-| Plain HTTP engine instead | ~16% | — |
+| PDF saved | **339** | 56% |
+| Bot challenge / hard block | 160 | 26% |
+| Landing page with no downloadable file | 110 | 18% |
+
+An earlier run of the wider TCO corpus (2,287 open-access rows) saved 751, or
+33%.
+
+Three bugs sat between 47% and 56%: the download path never received the
+OpenAlex API key, so its lookups drew on the shared anonymous budget and
+reported "no open-access copy" once throttled; ``open_access.oa_url`` was
+missing from the selected fields, which is the only place arXiv and many
+repositories put a direct file link; and the plain-HTTP fallback double-logged
+a success as a failure.
 
 Successful downloads take 1-4 seconds; failures cost 8-25 seconds because the
 page has to load before it can be classified. Expect roughly one paper every
@@ -331,33 +342,58 @@ misleading here: the first 1,000 candidates yield 152 matches, but offsets
 1,000-9,000 add another 175, so a depth of 4,000 loses about a third of the
 literature.
 
-### Why Crossref alone under-collects
+### Four discovery indexes, and why one is not enough
 
-Crossref's `query.title` ranks by relevance but only over records whose title
-contains the query words. A paper titled "ITO films grown by RF magnetron
-sputtering" never surfaces for the phrase "transparent conducting oxide", even
-though it is exactly the right paper. Scanning deeper does not help: the
-filter passes 152 of the first 1,000 candidates and then yields 15-30 per
-thousand for the rest of the 10,000 ceiling.
+No single free index covers this topic well. Each has a different failure mode,
+so a channel can query all of them and merge the results by DOI.
 
-That is why every channel may also carry an `openalex_queries` list. OpenAlex
-searches title **and abstract** server-side, so papers that describe the topic
-in their abstract but name the material differently in the title are found.
-Results from both indexes are merged and deduplicated by DOI.
+| Index | How it finds | Strength | Weakness here |
+|---|---|---|---|
+| **Crossref** | `query.title` relevance ranking | best precision near the top | only searches titles, so a paper titled "ITO films by RF magnetron sputtering" never appears for "transparent conducting oxide" |
+| **OpenAlex** | server-side `title_and_abstract.search` | searches abstracts, 200 records per call | needs an API key for a usable budget |
+| **arXiv** | `abs:"..."` field queries | never challenges a script, every hit is downloadable | tiny for materials work — ~30 hits for this topic |
+| **Europe PMC** | boolean query | strong abstracts and affiliations | returns 503 to some networks; currently unusable from this one |
+
+Measured contribution on the magnetron channel:
+
+| Stage | Papers |
+|---|---|
+| Crossref only | 480 |
+| + OpenAlex discovery | 1,121 |
+| + arXiv | **1,125** |
+
+That is a 2.3× increase. Crossref's shortfall is structural, not a tuning
+problem: scanning deeper does not help, because the filter passes 152 of the
+first 1,000 candidates and then only 15-30 per thousand after that.
+
+Configure each index independently:
 
 ```yaml
 TCO_SPUTTER:
-  queries:            # Crossref: ranked, title-oriented
+  queries:                       # Crossref
     - query: transparent conductive oxide magnetron sputtering
       must: [...]
-  openalex_queries:   # OpenAlex: server-side, searches abstract too
+  openalex_queries:              # OpenAlex, title+abstract
     - magnetron sputtering indium tin oxide
-    - magnetron sputtering ITO film
+  arxiv_queries:                 # arXiv, field-qualified
+    - abs:"magnetron sputtering" AND abs:ITO
+  europepmc_queries: []          # off: the service refuses this network
 ```
 
-Measured effect on this topic: Crossref found 480 records; the OpenAlex pass
-surfaces roughly 1,300 more candidates, of which about 500 survive the same
-three-group filter. Run with `--no-openalex-search` to skip the second pass.
+The `must` filter is applied during OpenAlex discovery, not after enrichment.
+Without that, a broad phrase surfaces thousands of works that the filter then
+discards, and the budget is spent for nothing.
+
+Flags: `--no-openalex-search` and `--no-epmc` skip those passes.
+
+### On Sci-Hub
+
+Not integrated, on purpose. Sci-Hub distributes copyrighted papers without
+authorisation, so wiring bulk automatic downloads to it would be building a
+tool for unauthorised redistribution. The legitimate routes are all covered
+above: Unpaywall and OpenAlex open-access locations, arXiv, and institutional
+repositories. For the remainder, the `download_failed.ris` path into Zotero
+with an institutional subscription is the route that actually works.
 
 ## Measured results
 
@@ -388,10 +424,10 @@ The `TCO_SPUTTER` output is committed to this repository so the corpus can be
 used without re-running anything:
 
 ```
-output/tco_magnetron.csv       480 papers, full metadata (17 columns)
-output/tco_magnetron_oa.csv    244 of those with an open-access copy
-output/pdfs2/<year>/...        117 downloaded PDFs (~425 MB)
-output/pdfs2_failed.csv        128 rows that could not be downloaded
+output/tco_magnetron.csv       1,125 papers, full metadata (17 columns)
+output/tco_magnetron_oa.csv    609 of those with an open-access copy
+output/pdfs3/<year>/...        337 downloaded PDFs (~1.1 GB, 339 rows)
+output/pdfs3_failed.csv        270 rows that could not be downloaded
 ```
 
 The PDFs are named `<first-author>_<year>_<journal>.pdf` and filed by
@@ -463,8 +499,10 @@ pf/
   refs.py                   RIS / BibTeX export
   llm.py                    optional LLM hook (no-op by default)
   sources/
-    crossref.py             discovery
-    openalex.py             enrichment, inverted-index decoding
+    crossref.py             discovery (title relevance)
+    openalex.py             discovery (title+abstract) and enrichment
+    arxiv.py                discovery, always downloadable
+    europepmc.py            discovery, often unavailable
 tests/
   test_filters.py           keyword matching
   test_export.py            CSV round-tripping

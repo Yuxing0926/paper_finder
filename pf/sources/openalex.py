@@ -254,6 +254,7 @@ class OpenAlex:
         channel: str,
         since: Optional[int] = None,
         max_records: int = 4000,
+        must: Optional[List[List[str]]] = None,
         log=None,
     ) -> Dict[str, dict]:
         """Find works by server-side keyword search.
@@ -265,7 +266,11 @@ class OpenAlex:
         drops work whose title does not contain every query word, which loses
         ground whenever the title calls the material something else.
 
-        Only DOIs are stored; the full record arrives through ``enrich``.
+        When ``must`` is given the keyword groups are applied here, before the
+        record is kept. A broad phrase like "magnetron sputtering transparent
+        conducting oxide" surfaces thousands of works that the three-group
+        filter then discards; enriching them all would burn the daily budget
+        for nothing.
         """
         collected: Dict[str, dict] = {}
         per_page = 200
@@ -290,7 +295,11 @@ class OpenAlex:
                     ),
                     "per_page": per_page,
                     "page": page,
-                    "select": "id,doi,title,publication_year",
+                    "select": (
+                        "id,doi,title,publication_year,abstract_inverted_index"
+                        if must
+                        else "id,doi,title,publication_year"
+                    ),
                 }
                 try:
                     payload = self._request(params)
@@ -304,11 +313,23 @@ class OpenAlex:
                 results = payload.get("results") or []
                 new = 0
                 for work in results:
+                    from ..filters import matches_groups
                     from ..models import norm_doi
 
                     doi = norm_doi(work.get("doi"))
                     if not doi or doi in collected:
                         continue
+                    if must:
+                        haystack = " ".join(
+                            [
+                                str(work.get("title") or ""),
+                                inverted_index_to_text(
+                                    work.get("abstract_inverted_index")
+                                ),
+                            ]
+                        )
+                        if not matches_groups(haystack, must):
+                            continue
                     collected[doi] = {
                         "doi": doi,
                         "title": " ".join(str(work.get("title") or "").split()),

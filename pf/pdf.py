@@ -163,6 +163,7 @@ class PdfFetcher:
     def __init__(
         self,
         email: str = "",
+        api_key: str = "",
         root: Path | str = Path("output/pdfs"),
         timeout: int = 45,
         pause: float = 0.5,
@@ -170,6 +171,7 @@ class PdfFetcher:
         session: Optional[requests.Session] = None,
     ) -> None:
         self.email = email
+        self.api_key = api_key
         self.root = Path(root)
         self.timeout = timeout
         self.pause = pause
@@ -217,10 +219,18 @@ class PdfFetcher:
     def _openalex_pdf(self, doi: str) -> List[str]:
         params = {
             "filter": f"doi:{doi}",
-            "select": "id,best_oa_location,locations",
+            # open_access.oa_url is where arXiv and many repositories put the
+            # only direct file link; omitting it from select meant those papers
+            # were reported as having no open-access copy at all.
+            "select": "id,open_access,best_oa_location,locations",
         }
         if self.email:
             params["mailto"] = self.email
+        if self.api_key:
+            # Without this every lookup draws on the shared anonymous budget,
+            # which a few hundred downloads exhaust; the failures then look
+            # like "no open-access copy" when the truth is "rate limited".
+            params["api_key"] = self.api_key
         try:
             response = self.api.get(OPENALEX_URL, params=params, timeout=30)
             response.raise_for_status()
@@ -231,13 +241,16 @@ class PdfFetcher:
             return []
         work = results[0]
         urls = []
-        best = (work.get("best_oa_location") or {}).get("pdf_url")
-        if best:
-            urls.append(best)
+
+        def add(candidate):
+            if candidate and candidate not in urls:
+                urls.append(candidate)
+
+        open_access = work.get("open_access") or {}
+        add(open_access.get("oa_url"))
+        add((work.get("best_oa_location") or {}).get("pdf_url"))
         for location in work.get("locations") or []:
-            url = location.get("pdf_url")
-            if url and url not in urls:
-                urls.append(url)
+            add(location.get("pdf_url"))
         return urls
 
     def candidate_links(self, paper: Paper) -> List[str]:

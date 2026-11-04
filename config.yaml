@@ -97,6 +97,17 @@ channels:
       - magnetron sputtering TCO
       - RF magnetron sputtering transparent conductive
       - DC magnetron sputtering transparent conductive
+    # arXiv searches with explicit field prefixes. Small for materials work
+    # (~30 hits here) but every result is downloadable and never challenged.
+    arxiv_queries:
+      - abs:"magnetron sputtering" AND abs:ITO
+      - abs:"magnetron sputtering" AND abs:"transparent conducting"
+      - abs:"magnetron sputtering" AND abs:"zinc oxide"
+      - abs:"magnetron sputtering" AND abs:TCO
+      - abs:"transparent conductive" AND abs:sputtering
+    # Europe PMC returns 503 to this network consistently; the code is kept so
+    # the channel works from a network it will serve. Not enabled by default.
+    europepmc_queries: []
 
   ITO:
     - query: indium tin oxide

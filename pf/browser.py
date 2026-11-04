@@ -16,7 +16,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, Optional
+from typing import Dict, Iterable, List, Optional
 from urllib.parse import urlparse
 
 from .models import Paper
@@ -152,18 +152,21 @@ def _looks_blocked(title: str, body: str) -> bool:
 class BrowserFetcher:
     root: Path = Path("output/pdfs")
     email: str = ""
+    api_key: str = ""
     headless: bool = True
     timeout_ms: int = 8000
     challenge_wait_ms: int = CHALLENGE_WAIT_MS
     pause: float = 1.0
     channel: Optional[str] = "chromium"
+    http_timeout: int = 20
+    paper_budget: float = 45.0
     blocked_hosts: set = field(default_factory=set)
 
     def __post_init__(self) -> None:
         self.root = Path(self.root)
         # Unpaywall rejects requests without an email (HTTP 422), which would
         # silently turn every paper into "no open-access copy".
-        self._helper = PdfFetcher(root=self.root, email=self.email)
+        self._helper = PdfFetcher(root=self.root, email=self.email, api_key=self.api_key)
         self._used_paths: set = set()
         if self.channel and not full_chromium_available():
             self.channel = None
@@ -211,10 +214,13 @@ class BrowserFetcher:
     def _attempt(self, context, url: str, destination: Path) -> tuple[str, str, int]:
         """Fetch one URL, then classify the outcome honestly.
 
-        A single page is used for both phases: a PDF that is served inline is
-        caught by the route handler, a PDF that is offered as a download is
-        caught by the download event, and anything else leaves the page loaded
-        so its HTML can be inspected without navigating twice.
+        The page is only *observed*, never rewritten. An earlier version
+        intercepted every response through ``route.fetch()`` so it could keep a
+        PDF body, but replaying document responses breaks redirect chains: doi
+        links stalled on doi.org and Chrome substituted "chromewebdata" error
+        documents, which is how 136 downloads were misreported as "landing
+        page". Listening to the ``response`` event is enough -- a PDF delivered
+        inline still fires it with a readable body.
         """
         host = urlparse(url).netloc.lower()
         if host in self.blocked_hosts:
@@ -224,38 +230,22 @@ class BrowserFetcher:
             HARD_CHALLENGE_WAIT_MS if _is_hard_challenge(host) else self.timeout_ms
         )
         captured: Dict[str, object] = {}
-
         page = context.new_page()
 
-        def on_route(route):
+        def keep(data: bytes) -> None:
+            if captured.get("data") is None and data[:4] == b"%PDF":
+                captured["data"] = data
+
+        def on_response(response):
             if captured.get("data") is not None:
-                try:
-                    route.abort()
-                except Exception:
-                    pass
                 return
             try:
-                response = route.fetch()
                 content_type = (response.headers.get("content-type") or "").lower()
-                if "pdf" in content_type:
-                    body = response.body()
-                    if body[:4] == b"%PDF":
-                        captured["data"] = body
-                        try:
-                            route.fulfill(
-                                status=200,
-                                headers={"content-type": "application/pdf"},
-                                body=body,
-                            )
-                        except Exception:
-                            pass
-                        return
-                route.fulfill(response=response)
+                if "pdf" not in content_type:
+                    return
+                keep(response.body())
             except Exception:
-                try:
-                    route.abort()
-                except Exception:
-                    pass
+                pass
 
         def on_download(download):
             if captured.get("data") is not None:
@@ -271,7 +261,7 @@ class BrowserFetcher:
             except Exception:
                 pass
 
-        page.route("**/*", on_route)
+        page.on("response", on_response)
         page.on("download", on_download)
 
         try:
@@ -293,7 +283,6 @@ class BrowserFetcher:
                 destination.write_bytes(data)
                 return "saved", "", len(data)
 
-            # Nothing downloaded: work out why from the page already loaded.
             try:
                 title = page.title()
                 body = page.content()
@@ -308,37 +297,46 @@ class BrowserFetcher:
 
             candidate = self._pdf_link_in_page(page, url)
             if candidate and candidate != url:
+                follow = min(budget, 8000)
+                page2 = context.new_page()
+                page2.on("response", on_response)
+                page2.on("download", on_download)
                 try:
-                    follow = min(budget, 6000)
-                    with page.expect_download(timeout=follow) as pending:
-                        try:
-                            page.goto(candidate, timeout=follow, wait_until="commit")
-                        except Exception as exc:
-                            if "download is starting" not in str(exc).lower():
-                                pass
-                    download = pending.value
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    download.save_as(str(destination))
-                    blob = destination.read_bytes()
-                    if blob[:4] == b"%PDF":
-                        return "saved", "", len(blob)
-                    destination.unlink(missing_ok=True)
+                    try:
+                        page2.goto(candidate, timeout=follow, wait_until="commit")
+                    except Exception:
+                        pass
+                    deadline = time.time() + follow / 1000
+                    while time.time() < deadline and captured.get("data") is None:
+                        page2.wait_for_timeout(150)
                 except Exception:
                     pass
+                finally:
+                    try:
+                        page2.close()
+                    except Exception:
+                        pass
+                data = captured.get("data")
+                if isinstance(data, bytes):
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_bytes(data)
+                    return "saved", "", len(data)
 
             final = urlparse(page.url).netloc.lower()
+            if final in REDIRECTOR_HOSTS or not final:
+                return (
+                    "no_link",
+                    f"{final or 'unresolved'} did not resolve to a publisher page",
+                    0,
+                )
             return (
                 "not_pdf",
-                f"landing page on {final or 'unknown host'} without a downloadable file",
+                f"landing page on {final} without a downloadable file",
                 0,
             )
         except Exception as exc:  # noqa: BLE001
             return "error", str(exc)[:120], 0
         finally:
-            try:
-                page.unroute("**/*", on_route)
-            except Exception:
-                pass
             try:
                 page.close()
             except Exception:
@@ -346,36 +344,79 @@ class BrowserFetcher:
 
     @staticmethod
     def _pdf_link_in_page(page, base_url: str) -> Optional[str]:
+        """Find a PDF link that plausibly belongs to the article.
+
+        Repository pages often carry unrelated PDFs -- an upload guide, a
+        licence form, a metadata sheet. Taking the first link on the page
+        downloaded the wrong document, so links whose filename looks
+        administrative are skipped.
+        """
         from urllib.parse import urljoin
 
-        selectors = [
-            'meta[name="citation_pdf_url"]',
-        ]
-        for selector in selectors:
-            try:
-                handle = page.query_selector(selector)
-                if not handle:
-                    continue
+        admin = (
+            "guide",
+            "supplement",
+            "suppl",
+            "supporting",
+            "instructions",
+            "template",
+            "form",
+            "licence",
+            "license",
+            "policy",
+            "readme",
+            "manual",
+            "copyright",
+        )
+
+        try:
+            handle = page.query_selector('meta[name="citation_pdf_url"]')
+            if handle:
                 value = handle.get_attribute("content")
                 if value:
                     return urljoin(base_url, value)
-            except Exception:
-                continue
+        except Exception:
+            pass
+
         try:
             links = page.eval_on_selector_all(
                 "a",
-                "els => els.map(e => e.href).filter(h => h && "
-                "(h.includes('pdfdirect') || h.includes('articlepdf') || "
-                "h.endsWith('.pdf') || h.includes('/pdf/')))",
+                "els => els.map(e => [e.href, (e.textContent||"").trim()])"
+                ".filter(x => x[0] && /pdf|bitstream|download|file/i.test(x[0]))",
             )
         except Exception:
             return None
-        for link in links or []:
-            lowered = link.lower()
-            if any(skip in lowered for skip in ("supplement", "suppl", "supporting")):
+
+        for href, text in links or []:
+            haystack = f"{href} {text}".lower()
+            if any(word in haystack for word in admin):
                 continue
-            return link
+            return href
         return None
+
+    def _http_fallback(
+        self, links: List[str], destination: Path
+    ) -> tuple[str, str, int]:
+        """Try the plain-HTTP fetcher on the same links.
+
+        Bounded on purpose. Each browser attempt already costs up to
+        ``timeout_ms``; letting the HTTP pass use its own 45-second default on
+        every link pushed single papers past six minutes. Two links and a short
+        timeout keeps the worst case near one browser attempt.
+        """
+        helper = PdfFetcher(
+            root=self.root, email=self.email, api_key=self.api_key,
+            timeout=self.http_timeout,
+        )
+        for url in links[:2]:
+            status, detail, size, retry_url = helper._try_download(url, destination)
+            if retry_url:
+                status, detail, size, _ = helper._try_download(
+                    retry_url, destination, allow_landing=False
+                )
+            if status == "saved" and size:
+                return status, "http", size
+        return "", "", 0
 
     def fetch(
         self,
@@ -446,6 +487,16 @@ class BrowserFetcher:
                     saved = False
                     last = ("error", "no usable link", 0)
                     for url in links:
+                        # Hard wall-clock cap per paper. Without it a single
+                        # host that hangs can burn several minutes, which is
+                        # what pushed some rows past 300 seconds.
+                        if time.time() - paper_started > self.paper_budget:
+                            # Note only; the failure is reported once below,
+                            # otherwise the same paper produces two log lines
+                            # and the counters stop adding up.
+                            if log:
+                                log(f"  budget spent on {paper.doi}, moving on")
+                            break
                         status, detail, size = self._attempt(context, url, path)
                         last = (status, detail, size)
                         if status == "saved":
@@ -462,13 +513,34 @@ class BrowserFetcher:
                             break
 
                     if not saved:
-                        status, detail, _ = last
-                        report.add(DownloadResult(paper.doi, status, detail))
-                        if log:
-                            log(
-                                f"[{index}/{len(todo)}] {status}: {paper.doi} "
-                                f"({detail}) in {time.time() - paper_started:.1f}s"
+                        # Some hosts invert the usual pattern: they serve a PDF
+                        # straight to a plain request but challenge a browser.
+                        # A second pass with the HTTP fetcher recovers those and
+                        # costs nothing when it also fails.
+                        _, http_detail, http_size = self._http_fallback(links, path)
+                        if http_size:
+                            report.add(
+                                DownloadResult(
+                                    paper.doi, "saved", http_detail, str(path), http_size
+                                )
                             )
+                            saved = True
+                            if log:
+                                log(
+                                    f"[{index}/{len(todo)}] saved {path.name} "
+                                    f"({http_size // 1024} KB) via http in "
+                                    f"{time.time() - paper_started:.1f}s"
+                                )
+                        else:
+                            # Report the failure exactly once, using the status
+                            # from the last browser attempt.
+                            status, detail, _ = last
+                            report.add(DownloadResult(paper.doi, status, detail))
+                            if log:
+                                log(
+                                    f"[{index}/{len(todo)}] {status}: {paper.doi} "
+                                    f"({detail}) in {time.time() - paper_started:.1f}s"
+                                )
 
                     if self.pause:
                         time.sleep(self.pause)

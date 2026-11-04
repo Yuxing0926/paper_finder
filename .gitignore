@@ -13,7 +13,13 @@ venv/
 
 # Exceptions: the magnetron-sputtering corpus is checked in on purpose, so the
 # collected PDFs and their metadata travel with the repository.
+#
+# pdfs3 is the current corpus (1,125 papers, 337 PDFs). pdfs2 is the earlier,
+# smaller run (480 papers) and is kept for comparison.
 !output/pdfs2/
+!output/pdfs3/
 !output/tco_magnetron.csv
 !output/tco_magnetron_oa.csv
+!output/tco_magnetron_v1_480.csv
 !output/pdfs2_failed.csv
+!output/pdfs3_failed.csv

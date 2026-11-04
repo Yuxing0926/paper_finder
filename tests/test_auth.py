@@ -82,3 +82,133 @@ class TestKeyResolution(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPdfKeyAndLinks(unittest.TestCase):
+    """Regressions for two bugs that made open-access PDFs look unavailable."""
+
+    def _fetcher(self, api_key="SECRET"):
+        from pf.pdf import PdfFetcher
+
+        return PdfFetcher(email="a@b.c", api_key=api_key, root="/tmp/x")
+
+    def test_openalex_lookup_sends_the_api_key(self):
+        from pf.pdf import PdfFetcher
+
+        sent = {}
+
+        class Sess:
+            headers = {}
+
+            def get(self, url, params=None, timeout=None):
+                sent.update(params or {})
+
+                class R:
+                    status_code = 200
+
+                    def raise_for_status(self):
+                        pass
+
+                    def json(self):
+                        return {"results": []}
+
+                return R()
+
+        fetcher = PdfFetcher(email="a@b.c", api_key="SECRET", root="/tmp/x")
+        fetcher.api = Sess()
+        fetcher._openalex_pdf("10.1/x")
+        self.assertEqual(sent.get("api_key"), "SECRET")
+
+    def test_open_access_oa_url_is_a_candidate(self):
+        from pf.pdf import PdfFetcher
+
+        class Sess:
+            headers = {}
+
+            def get(self, url, params=None, timeout=None):
+                class R:
+                    status_code = 200
+
+                    def raise_for_status(self):
+                        pass
+
+                    def json(self):
+                        return {
+                            "results": [
+                                {
+                                    "open_access": {
+                                        "oa_url": "https://arxiv.org/pdf/1610.08807"
+                                    },
+                                    "best_oa_location": None,
+                                    "locations": [],
+                                }
+                            ]
+                        }
+
+                return R()
+
+        fetcher = PdfFetcher(email="a@b.c", api_key="K", root="/tmp/x")
+        fetcher.api = Sess()
+        urls = fetcher._openalex_pdf("10.48550/arxiv.1610.08807")
+        self.assertIn("https://arxiv.org/pdf/1610.08807", urls)
+
+    def test_oa_url_comes_before_location_pdf_urls(self):
+        from pf.pdf import PdfFetcher
+
+        class Sess:
+            headers = {}
+
+            def get(self, url, params=None, timeout=None):
+                class R:
+                    status_code = 200
+
+                    def raise_for_status(self):
+                        pass
+
+                    def json(self):
+                        return {
+                            "results": [
+                                {
+                                    "open_access": {"oa_url": "https://first/pdf"},
+                                    "locations": [{"pdf_url": "https://second/pdf"}],
+                                }
+                            ]
+                        }
+
+                return R()
+
+        fetcher = PdfFetcher(email="a@b.c", api_key="K", root="/tmp/x")
+        fetcher.api = Sess()
+        self.assertEqual(
+            fetcher._openalex_pdf("10.1/x"), ["https://first/pdf", "https://second/pdf"]
+        )
+
+    def test_duplicate_urls_are_collapsed(self):
+        from pf.pdf import PdfFetcher
+
+        class Sess:
+            headers = {}
+
+            def get(self, url, params=None, timeout=None):
+                class R:
+                    status_code = 200
+
+                    def raise_for_status(self):
+                        pass
+
+                    def json(self):
+                        return {
+                            "results": [
+                                {
+                                    "open_access": {"oa_url": "https://same/pdf"},
+                                    "best_oa_location": {"pdf_url": "https://same/pdf"},
+                                    "locations": [{"pdf_url": "https://same/pdf"}],
+                                }
+                            ]
+                        }
+
+                return R()
+
+        fetcher = PdfFetcher(email="a@b.c", api_key="K", root="/tmp/x")
+        fetcher.api = Sess()
+        self.assertEqual(fetcher._openalex_pdf("10.1/x"), ["https://same/pdf"])
